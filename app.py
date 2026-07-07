@@ -16,13 +16,22 @@ from pathlib import Path
 import gradio as gr
 
 from core.analyzer import EditError, analyze_window
+from core.heuristics import detect_visual_heuristics
 from core.ingest import collect_local_files, download_youtube
-from core.llama_server import DEFAULT_MODEL_LABEL, MODELS, SERVER
+from core.llama_server import (DEFAULT_MODEL_LABEL, DEFAULT_VISION_MODEL_LABEL,
+                               MODELS, SERVER, VISION_MODELS)
 from core.report import (export_csv, export_json, extract_thumbnail,
                          filter_errors, fmt_time, merge_errors)
-from core.windows import make_windows
+from core.vision_analyzer import analyze_window_vision
+from core.whisper_cpp import (detect_transcript_errors, find_default_model,
+                              transcribe_video)
+from core.windows import make_windows, probe_duration
 
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
+PIPELINES = [
+    "Omni VLM (audio + visione, singolo modello)",
+    "Vision + whisper.cpp (leggero, modulare)",
+]
 
 
 @dataclass
@@ -45,8 +54,8 @@ def _table_rows(res: VideoResult) -> list[list]:
     ]
 
 
-def run_analysis(files, urls_text, model_label, min_confidence,
-                 progress=gr.Progress()):
+def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_label,
+                 whisper_model_path, min_confidence, progress=gr.Progress()):
     logs: list[str] = []
 
     def log(msg: str):
@@ -65,21 +74,25 @@ def run_analysis(files, urls_text, model_label, min_confidence,
         videos += download_youtube(urls_text, log=log)
     if not videos:
         log("Nessun video da analizzare: carica un file o inserisci un URL.")
-        yield logs_text(), gr.update(choices=[], value=None), None, [], [], None, None
+        yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         return
 
     log(f"{len(videos)} video in coda.")
-    yield logs_text(), gr.update(), None, [], [], None, None
+    yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
-    # 2. Avvia il modello
+    # 2. Avvia il modello richiesto
+    use_hybrid = pipeline_label == PIPELINES[1]
     progress(0.02, desc="Avvio modello...")
     try:
-        SERVER.ensure(MODELS[model_label], log=log)
+        if use_hybrid:
+            SERVER.ensure(VISION_MODELS[vision_model_label], log=log)
+        else:
+            SERVER.ensure(MODELS[model_label], log=log)
     except Exception as err:
         log(f"ERRORE avvio modello: {err}")
-        yield logs_text(), gr.update(), None, [], [], None, None
+        yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         return
-    yield logs_text(), gr.update(), None, [], [], None, None
+    yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
     # 3. Analizza in sequenza
     total = len(videos)
@@ -97,18 +110,31 @@ def run_analysis(files, urls_text, model_label, min_confidence,
         log(f"{len(wins)} finestre da analizzare.")
 
         raw_errors: list[EditError] = []
+        if use_hybrid:
+            log("Pipeline ibrida: euristiche visive + whisper.cpp + modello vision-only.")
+            raw_errors.extend(detect_visual_heuristics(wins, log=log))
+            segments = transcribe_video(
+                video,
+                vdir / "whisper",
+                model_path=whisper_model_path or "",
+                language="it",
+                log=log,
+            )
+            if segments:
+                raw_errors.extend(detect_transcript_errors(segments, probe_duration(video)))
+
         for w_i, win in enumerate(wins):
             frac = (v_i + (w_i / max(1, len(wins)))) / total
             progress(0.05 + 0.9 * frac,
                      desc=f"{name}: finestra {w_i + 1}/{len(wins)}")
-            found = analyze_window(win, log=log)
+            found = analyze_window_vision(win, log=log) if use_hybrid else analyze_window(win, log=log)
             if found:
                 for e in found:
                     log(f"  {e.label} @ {fmt_time(e.start)}-{fmt_time(e.end)} "
                         f"(conf {e.confidence:.2f}): {e.description}")
             raw_errors.extend(found)
             if w_i % 3 == 0:
-                yield logs_text(), gr.update(), None, [], [], None, None
+                yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         errors = filter_errors(merge_errors(raw_errors), float(min_confidence))
         log(f"'{name}': {len(errors)} errori dopo merge e filtro (soglia {min_confidence}).")
@@ -155,8 +181,9 @@ def build_ui() -> gr.Blocks:
         gr.Markdown(
             "# 🎬 Video Edit Checker\n"
             "Trova errori di montaggio (schermo nero, tagli mancati, frasi ripetute...) "
-            "con un modello multimodale **locale** (llama.cpp, audio + video)."
+            "con modelli locali: omni VLM oppure vision-only + whisper.cpp."
         )
+        default_whisper = find_default_model()
         with gr.Row():
             with gr.Column(scale=1):
                 files_in = gr.File(label="Video locali", file_count="multiple",
@@ -165,8 +192,20 @@ def build_ui() -> gr.Blocks:
                     label="URL YouTube (uno per riga, anche playlist)",
                     placeholder="https://www.youtube.com/watch?v=...\nhttps://www.youtube.com/playlist?list=...",
                     lines=3)
+                pipeline_in = gr.Radio(choices=PIPELINES, value=PIPELINES[0],
+                                       label="Pipeline")
                 model_in = gr.Dropdown(choices=list(MODELS.keys()),
-                                       value=DEFAULT_MODEL_LABEL, label="Modello")
+                                       value=DEFAULT_MODEL_LABEL,
+                                       label="Modello omni (audio + visione)")
+                vision_model_in = gr.Dropdown(choices=list(VISION_MODELS.keys()),
+                                              value=DEFAULT_VISION_MODEL_LABEL,
+                                              label="Modello vision-only")
+                whisper_model_in = gr.Textbox(
+                    label="Path modello whisper.cpp",
+                    value=str(default_whisper) if default_whisper else "",
+                    placeholder="vuoto = download automatico ggml-large-v3-turbo-q5_0.bin",
+                    lines=1,
+                )
                 conf_in = gr.Slider(0.0, 1.0, value=0.5, step=0.05,
                                     label="Soglia confidence")
                 run_btn = gr.Button("🔍 Analizza", variant="primary")
@@ -185,7 +224,11 @@ def build_ui() -> gr.Blocks:
                     csv_out = gr.File(label="Report CSV")
 
         outputs = [logs_out, video_sel, player, table, gallery, json_out, csv_out]
-        run_btn.click(run_analysis, [files_in, urls_in, model_in, conf_in], outputs)
+        run_btn.click(
+            run_analysis,
+            [files_in, urls_in, pipeline_in, model_in, vision_model_in, whisper_model_in, conf_in],
+            outputs,
+        )
         video_sel.change(select_video, [video_sel],
                          [player, table, gallery, json_out, csv_out])
     return demo

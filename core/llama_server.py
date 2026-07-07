@@ -11,13 +11,22 @@ import requests
 # Modelli GGUF ufficiali ggml-org con input audio+visione, dal più leggero
 # (per Mac/PC con poca RAM) al più potente (per workstation con molta RAM/VRAM).
 MODELS: dict[str, str] = {
+    "Qwen2.5-Omni-3B Q8 (consigliato per test, ~6 GB RAM)": "ggml-org/Qwen2.5-Omni-3B-GGUF:Q8_0",
     "Gemma 4 E2B (default, ~8 GB RAM)": "ggml-org/gemma-4-E2B-it-GGUF",
-    "Qwen2.5-Omni-3B Q4 (leggerissimo, meno affidabile)": "ggml-org/Qwen2.5-Omni-3B-GGUF:Q4_K_M",
-    "Gemma 4 E4B (medio, ≥16 GB RAM)": "ggml-org/gemma-4-E4B-it-GGUF",
-    "Qwen2.5-Omni-7B (medio, ≥16 GB RAM)": "ggml-org/Qwen2.5-Omni-7B-GGUF:Q4_K_M",
-    "Qwen3-Omni-30B-A3B (potente, ≥32 GB RAM)": "ggml-org/Qwen3-Omni-30B-A3B-Instruct-GGUF",
+    "Qwen2.5-Omni-3B Q4 (piu leggero, meno affidabile)": "ggml-org/Qwen2.5-Omni-3B-GGUF:Q4_K_M",
+    "Gemma 4 E4B (medio, >=16 GB RAM)": "ggml-org/gemma-4-E4B-it-GGUF",
+    "Qwen2.5-Omni-7B (medio, >=16 GB RAM)": "ggml-org/Qwen2.5-Omni-7B-GGUF:Q4_K_M",
+    "Qwen3-Omni-30B-A3B (potente, >=32 GB RAM)": "ggml-org/Qwen3-Omni-30B-A3B-Instruct-GGUF",
 }
-DEFAULT_MODEL_LABEL = "Gemma 4 E2B (default, ~8 GB RAM)"
+DEFAULT_MODEL_LABEL = "Qwen2.5-Omni-3B Q8 (consigliato per test, ~6 GB RAM)"
+
+VISION_MODELS: dict[str, str] = {
+    "LiquidAI LFM2.5-VL 1.6B Q8 (vision-only, leggero)": "LiquidAI/LFM2.5-VL-1.6B-GGUF:Q8_0",
+    "LiquidAI LFM2.5-VL 1.6B Q4 (vision-only, minimo consumo)": "LiquidAI/LFM2.5-VL-1.6B-GGUF:Q4_0",
+    "SmolVLM2 500M Video (vision-only, velocissimo)": "ggml-org/SmolVLM2-500M-Video-Instruct-GGUF",
+    "Qwen2.5-VL 3B (vision-only, piu accurato)": "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF",
+}
+DEFAULT_VISION_MODEL_LABEL = "LiquidAI LFM2.5-VL 1.6B Q8 (vision-only, leggero)"
 
 HOST = "http://127.0.0.1:8090"
 PORT = 8090
@@ -51,11 +60,28 @@ class LlamaServer:
             self.proc = None
             self.current_hf = None
 
+    def _kill_port_holders(self, log=print) -> None:
+        """Uccide eventuali processi esterni che tengono la porta PORT."""
+        try:
+            res = subprocess.run(
+                ["lsof", "-tiTCP", f":{PORT}", "-sTCP:LISTEN"],
+                capture_output=True, text=True, timeout=5,
+            )
+            pids = [p for p in res.stdout.split() if p]
+            for pid in pids:
+                log(f"Killo processo {pid} che tiene la porta {PORT}.")
+                subprocess.run(["kill", pid], timeout=5)
+            if pids:
+                time.sleep(2)
+        except Exception:
+            pass
+
     def ensure(self, hf_model: str, log=print) -> None:
         """Garantisce che il server giri con il modello richiesto."""
         if self.is_running() and self.current_hf == hf_model:
             return
         self.stop()
+        self._kill_port_holders(log=log)
         # Flag conservativi per Mac 8 GB: contesto ridotto, batch piccoli,
         # encoder multimodale su CPU (evita OOM Metal), thinking disabilitato.
         cmd = [
@@ -63,7 +89,7 @@ class LlamaServer:
             "-hf", hf_model,
             "--port", str(PORT),
             "-ngl", "999",
-            "-c", "4096",
+            "-c", "8192",
             "-b", "1024",
             "-ub", "256",
             "--no-mmproj-offload",
