@@ -40,12 +40,39 @@ def has_audio(video: Path) -> bool:
     return bool(res.stdout.strip())
 
 
-def make_windows(video: Path, workdir: Path, log=print) -> list[Window]:
-    """Crea le finestre, estraendo frame jpeg e segmento audio per ciascuna."""
+def _extract_all_frames(video: Path, out_dir: Path) -> list[tuple[float, Path]]:
+    """Estrae tutti i frame del video in un solo passaggio ffmpeg.
+
+    Un processo per frame (seek ripetuto) teneva la CPU occupata per minuti
+    a GPU ferma; un'unica decodifica sequenziale è molto più veloce.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(video),
+         "-vf", (f"fps=1/{FRAME_EVERY_SECONDS:g},"
+                 f"scale='min({FRAME_MAX_SIDE},iw)':-2"),
+         "-q:v", "4", str(out_dir / "frame_%05d.jpg")],
+        capture_output=True, check=False,
+    )
+    return [(i * FRAME_EVERY_SECONDS, p)
+            for i, p in enumerate(sorted(out_dir.glob("frame_*.jpg")))]
+
+
+def make_windows(video: Path, workdir: Path, log=print,
+                 with_audio: bool = True) -> list[Window]:
+    """Crea le finestre riusando i frame estratti in un unico passaggio.
+
+    L'audio per finestra viene estratto solo se richiesto (pipeline omni);
+    la pipeline ibrida usa whisper.cpp sull'audio intero.
+    """
     duration = probe_duration(video)
-    audio_ok = has_audio(video)
-    if not audio_ok:
+    audio_ok = with_audio and has_audio(video)
+    if with_audio and not audio_ok:
         log("Attenzione: il video non ha traccia audio; analisi solo visiva.")
+    frames = _extract_all_frames(video, workdir / "frames")
+    if not frames:
+        raise RuntimeError("ffmpeg non ha estratto alcun frame dal video")
+
     windows: list[Window] = []
     step = WINDOW_SECONDS - OVERLAP_SECONDS
     start = 0.0
@@ -55,29 +82,14 @@ def make_windows(video: Path, workdir: Path, log=print) -> list[Window]:
         if win_dur < 1.0 and idx > 0:
             break
         win = Window(index=idx, start=start, duration=win_dur)
-        wdir = workdir / f"win_{idx:04d}"
-        wdir.mkdir(parents=True, exist_ok=True)
+        for t, path in frames:
+            if start - 0.01 <= t < start + win_dur:
+                win.frame_times.append(t)
+                win.frame_paths.append(path)
 
-        # Frame: uno ogni FRAME_EVERY_SECONDS all'interno della finestra
-        t = 0.0
-        f_i = 0
-        while t < win_dur:
-            frame_path = wdir / f"frame_{f_i:02d}.jpg"
-            subprocess.run(
-                ["ffmpeg", "-y", "-v", "error", "-ss", f"{start + t:.3f}",
-                 "-i", str(video), "-frames:v", "1",
-                 "-vf", f"scale='min({FRAME_MAX_SIDE},iw)':-2",
-                 "-q:v", "4", str(frame_path)],
-                capture_output=True, check=False,
-            )
-            if frame_path.exists():
-                win.frame_paths.append(frame_path)
-                win.frame_times.append(start + t)
-                f_i += 1
-            t += FRAME_EVERY_SECONDS
-
-        # Audio: segmento WAV 16 kHz mono
         if audio_ok:
+            wdir = workdir / f"win_{idx:04d}"
+            wdir.mkdir(parents=True, exist_ok=True)
             audio_path = wdir / "audio.wav"
             subprocess.run(
                 ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.3f}",

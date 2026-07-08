@@ -1,0 +1,263 @@
+"""Installer automatico di Video Edit Checker.
+
+Uso:  python install.py    (Windows: doppio clic su install.bat)
+
+Rileva sistema operativo e GPU, poi prepara tutto il necessario:
+  1. virtualenv .venv con le dipendenze Python
+  2. ffmpeg/ffprobe            (estrazione frame e audio)
+  3. llama.cpp (llama-server)  (build CUDA per NVIDIA, Vulkan per AMD/Intel)
+  4. whisper.cpp (whisper-cli) (trascrizione audio, pipeline ibrida)
+
+I binari finiscono nella cartella locale `tools/` del progetto: nessuna
+modifica al PATH di sistema. Rilanciare lo script e' sempre sicuro:
+salta cio' che e' gia' installato.
+"""
+
+from __future__ import annotations
+
+import json
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import urllib.request
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+TOOLS = ROOT / "tools"
+VENV = ROOT / ".venv"
+
+FFMPEG_WIN_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+FFMPEG_LINUX_URL = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+
+
+def log(msg: str) -> None:
+    print(f"[install] {msg}", flush=True)
+
+
+def die(msg: str) -> None:
+    print(f"\n[install] ERRORE: {msg}", flush=True)
+    sys.exit(1)
+
+
+def venv_python() -> Path:
+    return VENV / ("Scripts" if platform.system() == "Windows" else "bin") / (
+        "python.exe" if platform.system() == "Windows" else "python")
+
+
+def which_anywhere(name: str) -> str | None:
+    """Cerca un binario nel PATH e nella cartella tools/ del progetto."""
+    found = shutil.which(name)
+    if found:
+        return found
+    exe = name + (".exe" if platform.system() == "Windows" else "")
+    if TOOLS.exists():
+        for hit in TOOLS.rglob(exe):
+            if hit.is_file():
+                return str(hit)
+    return None
+
+
+def download(url: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    log(f"Scarico {url}")
+
+    def hook(blocks: int, block_size: int, total: int) -> None:
+        if total > 0:
+            pct = min(100, blocks * block_size * 100 // total)
+            print(f"\r[install]   ...{pct}%", end="", flush=True)
+
+    req = urllib.request.Request(url, headers={"User-Agent": "video-edit-checker-installer"})
+    with urllib.request.urlopen(req) as resp, open(dest, "wb") as f:
+        total = int(resp.headers.get("Content-Length") or 0)
+        read = 0
+        while True:
+            chunk = resp.read(1024 * 256)
+            if not chunk:
+                break
+            f.write(chunk)
+            read += len(chunk)
+            if total:
+                print(f"\r[install]   ...{read * 100 // total}%", end="", flush=True)
+    print(flush=True)
+
+
+def extract(archive: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    log(f"Estraggo {archive.name} in {dest.relative_to(ROOT)}/")
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as z:
+            z.extractall(dest)
+    else:
+        with tarfile.open(archive) as t:
+            t.extractall(dest)
+    archive.unlink(missing_ok=True)
+
+
+def github_latest_assets(repo: str) -> list[dict]:
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    req = urllib.request.Request(url, headers={"User-Agent": "video-edit-checker-installer"})
+    with urllib.request.urlopen(req) as resp:
+        data = json.load(resp)
+    log(f"{repo}: ultima release {data.get('tag_name', '?')}")
+    return data.get("assets", [])
+
+
+def pick_asset(assets: list[dict], patterns: list[str]) -> dict | None:
+    for pat in patterns:
+        for a in assets:
+            if re.search(pat, a["name"], re.IGNORECASE):
+                return a
+    return None
+
+
+def detect_gpu() -> str:
+    """Ritorna 'nvidia', 'apple' o 'generic' (AMD/Intel -> Vulkan)."""
+    if platform.system() == "Darwin":
+        return "apple"
+    if shutil.which("nvidia-smi"):
+        try:
+            res = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=10)
+            if res.returncode == 0 and "GPU" in res.stdout:
+                return "nvidia"
+        except Exception:
+            pass
+    return "generic"
+
+
+def try_brew(*packages: str) -> bool:
+    if shutil.which("brew") is None:
+        return False
+    for pkg in packages:
+        log(f"brew install {pkg}...")
+        if subprocess.run(["brew", "install", pkg]).returncode != 0:
+            return False
+    return True
+
+
+def setup_venv() -> None:
+    if not venv_python().exists():
+        log("Creo il virtualenv .venv...")
+        subprocess.run([sys.executable, "-m", "venv", str(VENV)], check=True)
+    log("Installo le dipendenze Python (gradio, yt-dlp, Pillow, requests)...")
+    subprocess.run([str(venv_python()), "-m", "pip", "install", "-q", "--upgrade", "pip"], check=True)
+    subprocess.run([str(venv_python()), "-m", "pip", "install", "-q",
+                    "-r", str(ROOT / "requirements.txt")], check=True)
+    log("Dipendenze Python OK.")
+
+
+def setup_ffmpeg(system: str) -> None:
+    if which_anywhere("ffmpeg") and which_anywhere("ffprobe"):
+        log("ffmpeg gia' presente, salto.")
+        return
+    if system == "Windows":
+        archive = TOOLS / "ffmpeg.zip"
+        download(FFMPEG_WIN_URL, archive)
+        extract(archive, TOOLS / "ffmpeg")
+    elif system == "Linux":
+        archive = TOOLS / "ffmpeg.tar.xz"
+        download(FFMPEG_LINUX_URL, archive)
+        extract(archive, TOOLS / "ffmpeg")
+    else:  # macOS
+        if not try_brew("ffmpeg"):
+            die("Installa Homebrew (https://brew.sh) e rilancia, oppure installa ffmpeg a mano.")
+    if not which_anywhere("ffmpeg"):
+        die("ffmpeg non trovato dopo l'installazione.")
+    log("ffmpeg OK.")
+
+
+def setup_llama(system: str, gpu: str) -> None:
+    if which_anywhere("llama-server"):
+        log("llama-server gia' presente, salto.")
+        return
+    if system == "Darwin":
+        if not try_brew("llama.cpp"):
+            die("Installa Homebrew (https://brew.sh) e rilancia per ottenere llama.cpp.")
+        log("llama-server OK (Metal via Homebrew).")
+        return
+
+    assets = github_latest_assets("ggml-org/llama.cpp")
+    if system == "Windows":
+        if gpu == "nvidia":
+            patterns = [r"bin-win-cuda.*x64\.zip"]
+        else:
+            patterns = [r"bin-win-vulkan-x64\.zip", r"bin-win-cpu-x64\.zip"]
+    else:  # Linux
+        patterns = [r"bin-ubuntu-vulkan-x64", r"bin-ubuntu-x64"]
+
+    asset = pick_asset(assets, patterns)
+    if asset is None:
+        die("Nessun binario llama.cpp adatto trovato nella release; installa manualmente.")
+    archive = TOOLS / asset["name"]
+    download(asset["browser_download_url"], archive)
+    extract(archive, TOOLS / "llama")
+
+    if system == "Windows" and gpu == "nvidia":
+        cudart = pick_asset(assets, [r"^cudart-.*x64\.zip"])
+        if cudart:
+            archive = TOOLS / cudart["name"]
+            download(cudart["browser_download_url"], archive)
+            extract(archive, TOOLS / "llama")
+
+    if not which_anywhere("llama-server"):
+        die("llama-server non trovato dopo l'estrazione.")
+    backend = {"nvidia": "CUDA", "generic": "Vulkan/CPU"}.get(gpu, gpu)
+    log(f"llama-server OK (backend {backend}).")
+
+
+def setup_whisper(system: str, gpu: str) -> None:
+    if which_anywhere("whisper-cli"):
+        log("whisper-cli gia' presente, salto.")
+        return
+    if system == "Darwin":
+        if not try_brew("whisper-cpp"):
+            log("ATTENZIONE: whisper-cli non installato; la pipeline ibrida non avra' l'analisi audio.")
+        return
+
+    assets = github_latest_assets("ggml-org/whisper.cpp")
+    if system == "Windows":
+        patterns = [r"whisper-cublas.*bin-x64\.zip"] if gpu == "nvidia" else []
+        patterns += [r"whisper-blas-bin-x64\.zip", r"whisper-bin-x64\.zip"]
+    else:  # Linux
+        patterns = [r"whisper-bin-ubuntu-x64\.tar\.gz"]
+
+    asset = pick_asset(assets, patterns)
+    if asset is None:
+        log("ATTENZIONE: nessun binario whisper.cpp adatto; la pipeline ibrida non avra' l'analisi audio.")
+        return
+    archive = TOOLS / asset["name"]
+    download(asset["browser_download_url"], archive)
+    extract(archive, TOOLS / "whisper")
+    if which_anywhere("whisper-cli"):
+        log("whisper-cli OK.")
+    else:
+        log("ATTENZIONE: whisper-cli non trovato dopo l'estrazione.")
+
+
+def main() -> None:
+    if sys.version_info < (3, 10):
+        die(f"Serve Python 3.10+, trovato {platform.python_version()}.")
+    system = platform.system()
+    if system not in {"Windows", "Linux", "Darwin"}:
+        die(f"Sistema non supportato: {system}")
+    gpu = detect_gpu()
+    log(f"Sistema: {system} {platform.machine()} | GPU: {gpu}")
+    TOOLS.mkdir(exist_ok=True)
+
+    setup_venv()
+    setup_ffmpeg(system)
+    setup_llama(system, gpu)
+    setup_whisper(system, gpu)
+
+    runner = "run.bat" if system == "Windows" else "./run.sh"
+    print()
+    log("Installazione completata!")
+    log(f"Avvia l'app con: {runner}  (poi apri http://127.0.0.1:7860)")
+    log("Al primo 'Analizza' verranno scaricati i modelli AI (una sola volta).")
+
+
+if __name__ == "__main__":
+    main()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import os
 import subprocess
 import time
 
@@ -30,6 +31,11 @@ DEFAULT_VISION_MODEL_LABEL = "LiquidAI LFM2.5-VL 1.6B Q8 (vision-only, leggero)"
 
 HOST = "http://127.0.0.1:8090"
 PORT = 8090
+
+# Richieste simultanee al server (slot llama.cpp + thread nell'app).
+# 2 va bene su iGPU; su GPU dedicate potenti alzare con VEC_PARALLEL=4.
+N_PARALLEL = max(1, int(os.environ.get("VEC_PARALLEL", "2")))
+CTX_PER_SLOT = max(4096, int(os.environ.get("VEC_CTX_PER_SLOT", "8192")))
 
 
 class LlamaServer:
@@ -63,14 +69,31 @@ class LlamaServer:
     def _kill_port_holders(self, log=print) -> None:
         """Uccide eventuali processi esterni che tengono la porta PORT."""
         try:
-            res = subprocess.run(
-                ["lsof", "-tiTCP", f":{PORT}", "-sTCP:LISTEN"],
-                capture_output=True, text=True, timeout=5,
-            )
-            pids = [p for p in res.stdout.split() if p]
-            for pid in pids:
+            pids: list[str] = []
+            if os.name == "nt":
+                res = subprocess.run(
+                    ["netstat", "-ano", "-p", "TCP"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                for line in res.stdout.splitlines():
+                    parts = line.split()
+                    if (len(parts) >= 5 and parts[0] == "TCP"
+                            and parts[1].endswith(f":{PORT}")
+                            and parts[3].upper() == "LISTENING"):
+                        pids.append(parts[4])
+            else:
+                res = subprocess.run(
+                    ["lsof", "-tiTCP", f":{PORT}", "-sTCP:LISTEN"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                pids = [p for p in res.stdout.split() if p]
+            for pid in set(pids):
                 log(f"Killo processo {pid} che tiene la porta {PORT}.")
-                subprocess.run(["kill", pid], timeout=5)
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", pid, "/F"],
+                                   capture_output=True, timeout=10)
+                else:
+                    subprocess.run(["kill", pid], timeout=5)
             if pids:
                 time.sleep(2)
         except Exception:
@@ -84,15 +107,19 @@ class LlamaServer:
         self._kill_port_holders(log=log)
         # Flag conservativi per Mac 8 GB: contesto ridotto, batch piccoli,
         # encoder multimodale su CPU (evita OOM Metal), thinking disabilitato.
+        # Slot paralleli per tenere piena la GPU tra una finestra e l'altra;
+        # il contesto totale scala con gli slot. L'encoder mmproj resta sulla
+        # GPU: su CPU satura ~9 core e lascia la GPU ferma durante la
+        # codifica delle immagini.
         cmd = [
             "llama-server",
             "-hf", hf_model,
             "--port", str(PORT),
             "-ngl", "999",
-            "-c", "8192",
-            "-b", "1024",
-            "-ub", "256",
-            "--no-mmproj-offload",
+            "-c", str(CTX_PER_SLOT * N_PARALLEL),
+            "-np", str(N_PARALLEL),
+            "-b", "2048",
+            "-ub", "512",
             "--reasoning-budget", "0",
             "--no-webui",
         ]

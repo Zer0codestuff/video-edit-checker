@@ -16,6 +16,9 @@ env/
 downloads/
 runs/
 
+# Binaries downloaded by install.py
+tools/
+
 # OS files
 .DS_Store
 Thumbs.db

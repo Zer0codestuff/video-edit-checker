@@ -8,18 +8,19 @@ Avvio:  python app.py
 
 from __future__ import annotations
 
-import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import gradio as gr
 
 from core.analyzer import EditError, analyze_window
-from core.heuristics import detect_visual_heuristics
+from core.binaries import has_whisper, missing_required, setup_path
+from core.heuristics import detect_visual_heuristics, verify_visual_errors
 from core.ingest import collect_local_files, download_youtube
 from core.llama_server import (DEFAULT_MODEL_LABEL, DEFAULT_VISION_MODEL_LABEL,
-                               MODELS, SERVER, VISION_MODELS)
+                               MODELS, N_PARALLEL, SERVER, VISION_MODELS)
 from core.report import (export_csv, export_json, extract_thumbnail,
                          filter_errors, fmt_time, merge_errors)
 from core.vision_analyzer import analyze_window_vision
@@ -103,39 +104,52 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
         vdir.mkdir(parents=True, exist_ok=True)
 
         try:
-            wins = make_windows(video, vdir / "windows", log=log)
+            wins = make_windows(video, vdir / "windows", log=log,
+                                with_audio=not use_hybrid)
         except Exception as err:
             log(f"ERRORE ffmpeg su '{name}': {err}")
             continue
         log(f"{len(wins)} finestre da analizzare.")
 
         raw_errors: list[EditError] = []
-        if use_hybrid:
-            log("Pipeline ibrida: euristiche visive + whisper.cpp + modello vision-only.")
-            raw_errors.extend(detect_visual_heuristics(wins, log=log))
-            segments = transcribe_video(
-                video,
-                vdir / "whisper",
-                model_path=whisper_model_path or "",
-                language="it",
-                log=log,
-            )
-            if segments:
-                raw_errors.extend(detect_transcript_errors(segments, probe_duration(video)))
+        analyze = analyze_window_vision if use_hybrid else analyze_window
+        # N_PARALLEL richieste LLM in volo (= slot llama-server) + whisper su
+        # CPU in parallelo all'analisi vision, per non lasciare ferma la GPU.
+        with ThreadPoolExecutor(max_workers=N_PARALLEL) as llm_pool, \
+                ThreadPoolExecutor(max_workers=1) as bg_pool:
+            transcript_future = None
+            if use_hybrid:
+                log("Pipeline ibrida: euristiche visive + whisper.cpp + modello vision-only.")
+                raw_errors.extend(detect_visual_heuristics(wins, log=log))
+                transcript_future = bg_pool.submit(
+                    transcribe_video,
+                    video,
+                    vdir / "whisper",
+                    model_path=whisper_model_path or "",
+                    language="it",
+                    log=log,
+                )
 
-        for w_i, win in enumerate(wins):
-            frac = (v_i + (w_i / max(1, len(wins)))) / total
-            progress(0.05 + 0.9 * frac,
-                     desc=f"{name}: finestra {w_i + 1}/{len(wins)}")
-            found = analyze_window_vision(win, log=log) if use_hybrid else analyze_window(win, log=log)
-            if found:
-                for e in found:
-                    log(f"  {e.label} @ {fmt_time(e.start)}-{fmt_time(e.end)} "
-                        f"(conf {e.confidence:.2f}): {e.description}")
-            raw_errors.extend(found)
-            if w_i % 3 == 0:
-                yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            futures = [llm_pool.submit(analyze, win, log=log) for win in wins]
+            for w_i, fut in enumerate(futures):
+                frac = (v_i + (w_i / max(1, len(wins)))) / total
+                progress(0.05 + 0.9 * frac,
+                         desc=f"{name}: finestra {w_i + 1}/{len(wins)}")
+                found = fut.result()
+                if found:
+                    for e in found:
+                        log(f"  {e.label} @ {fmt_time(e.start)}-{fmt_time(e.end)} "
+                            f"(conf {e.confidence:.2f}): {e.description}")
+                raw_errors.extend(found)
+                if w_i % 3 == 0:
+                    yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
+            if transcript_future is not None:
+                segments = transcript_future.result()
+                if segments:
+                    raw_errors.extend(detect_transcript_errors(segments, probe_duration(video)))
+
+        raw_errors = verify_visual_errors(raw_errors, wins, log=log)
         errors = filter_errors(merge_errors(raw_errors), float(min_confidence))
         log(f"'{name}': {len(errors)} errori dopo merge e filtro (soglia {min_confidence}).")
 
@@ -235,8 +249,14 @@ def build_ui() -> gr.Blocks:
 
 
 if __name__ == "__main__":
-    if shutil.which("llama-server") is None:
-        raise SystemExit("llama-server non trovato: installa con `brew install llama.cpp`")
-    if shutil.which("ffmpeg") is None:
-        raise SystemExit("ffmpeg non trovato: installa con `brew install ffmpeg`")
+    setup_path()
+    missing = missing_required()
+    if missing:
+        raise SystemExit(
+            f"Mancano i binari: {', '.join(missing)}. "
+            "Esegui prima l'installazione: python install.py"
+        )
+    if not has_whisper():
+        print("Avviso: whisper-cli non trovato; la pipeline ibrida non avra' "
+              "l'analisi audio. Esegui `python install.py` per installarlo.")
     build_ui().launch(server_name="127.0.0.1", server_port=7860)

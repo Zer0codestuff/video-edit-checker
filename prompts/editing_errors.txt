@@ -12,6 +12,8 @@ Il tuo compito è trovare ERRORI DI MONTAGGIO, cioè difetti che un editor avreb
 
 NON segnalare come errori: transizioni volute, cambi di scena normali, pause naturali brevi, musica, contenuti del video in sé.
 
+IMPORTANTE: nella maggior parte delle finestre NON c'è alcun errore, e la risposta corretta è {{"errors": []}}. Segnala "black_screen" SOLO se il frame è davvero quasi completamente nero: se contiene slide, testo, grafica o persone visibili NON è uno schermo nero. Basati esclusivamente su ciò che vedi nelle immagini e senti nell'audio, non sulle etichette testuali dei frame.
+
 Analizza prima ogni frame visivamente, poi usa l'audio per individuare problemi sonori o frasi ripetute. Rispondi SOLO con un oggetto JSON valido in questo formato, senza altro testo:
 ```json
 {{"errors": [{{"type": "black_screen", "start": <secondi assoluti nel video>, "end": <secondi assoluti>, "description": "<breve spiegazione in italiano>", "confidence": <0.0-1.0>}}]}}

@@ -10,6 +10,7 @@ from pathlib import Path
 from core.analyzer import ERROR_TYPES, EditError
 
 MERGE_GAP_SECONDS = 3.0
+BLACK_MIN_DURATION_SECONDS = 5.0
 
 
 def merge_errors(errors: list[EditError]) -> list[EditError]:
@@ -28,7 +29,14 @@ def merge_errors(errors: list[EditError]) -> list[EditError]:
 
 
 def filter_errors(errors: list[EditError], min_confidence: float) -> list[EditError]:
-    return [e for e in errors if e.confidence >= min_confidence]
+    out: list[EditError] = []
+    for e in errors:
+        if e.confidence < min_confidence:
+            continue
+        if e.type == "black_screen" and (e.end - e.start) <= BLACK_MIN_DURATION_SECONDS:
+            continue
+        out.append(e)
+    return out
 
 
 def extract_thumbnail(video: Path, t: float, out_path: Path) -> Path | None:
