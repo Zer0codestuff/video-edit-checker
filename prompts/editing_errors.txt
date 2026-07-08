@@ -8,7 +8,7 @@ Error types to detect:
 - "black_screen": the screen is completely or almost completely black (not an intentional artistic fade)
 - "frozen_frame": the image is stuck/frozen while the audio keeps going
 - "missed_cut": a cut the editor missed, e.g. the speaker makes a mistake and then says things like "lo ripeto", "aspetta", "rifacciamo", "da capo" ("let me repeat", "wait", "let's redo it", "from the top"), or restarts the same sentence; or obvious dead time / long hesitations that should have been cut
-- "repeated_phrase": the same sentence or part of a sentence is spoken twice almost identically
+- "repeated_phrase": the same complete sentence (or a large part of it) is spoken twice almost word-for-word, one right after the other, as if the take was recorded twice and both takes were left in
 - "audio_glitch": audio that skips, cuts off abruptly, prolonged abnormal silence, recording noises (microphone bumps, etc.)
 - "other": any other obvious editing or recording error
 
@@ -19,6 +19,7 @@ CRITICAL RULES:
 - Report "black_screen" ONLY if the frame is truly almost entirely black. If it shows slides, text, graphics or visible people, it is NOT a black screen.
 - Judge only from what you actually see in the images and hear in the audio, never from the text labels alone.
 - Set "confidence" honestly: 0.9+ only for unmistakable errors, 0.5-0.7 for plausible but uncertain ones.
+- Report "repeated_phrase" ONLY if you literally hear the SAME words twice in THIS window's audio, and quote the repeated words verbatim in the description. Speakers normally reuse words, rephrase concepts, use refrains or lists: that is NOT a repeated phrase. If you cannot quote the exact duplicated sentence, do not report it.
 
 Analyze each frame visually first, then use the audio to find sound problems and repeated sentences. Reply with ONLY one valid JSON object, no other text:
 ```json

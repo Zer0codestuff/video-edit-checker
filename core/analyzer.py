@@ -153,11 +153,18 @@ def analyze_window(win: Window, timeout: float = 600.0, log=print) -> list[EditE
             end += win.start
         start = max(win.start, min(start, win_end))
         end = max(start, min(end, win_end))
+        # I modelli omni piccoli tendono a inventare frasi ripetute: il prompt
+        # impone di citare testualmente le parole duplicate; se la descrizione
+        # non contiene una citazione, abbassa la confidence sotto la soglia
+        # di default (0.5) cosi' il finto errore viene filtrato.
+        desc = str(item.get("description", "")).strip()
+        if etype == "repeated_phrase" and not re.search(r"[«»\"']", desc):
+            conf = min(conf, 0.4)
         errors.append(EditError(
             type=etype,
             start=start,
             end=end,
-            description=str(item.get("description", "")).strip(),
+            description=desc,
             confidence=max(0.0, min(conf, 1.0)),
         ))
     return errors
