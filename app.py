@@ -19,7 +19,9 @@ from core.analyzer import EditError, analyze_window
 from core.binaries import has_whisper, missing_required, setup_path
 from core.heuristics import detect_visual_heuristics, verify_visual_errors
 from core.ingest import collect_local_files, download_youtube
-from core.llama_server import (DEFAULT_MODEL_LABEL, DEFAULT_VIDEO_MODEL_LABEL,
+from core.llama_server import (BATCH_PRESETS, CTX_PER_SLOT,
+                               DEFAULT_BATCH_PRESET, DEFAULT_MODEL_LABEL,
+                               DEFAULT_VIDEO_MODEL_LABEL,
                                DEFAULT_VISION_MODEL_LABEL, MODELS, N_PARALLEL,
                                SERVER, VIDEO_MODELS, VISION_MODELS)
 from core.report import (export_csv, export_json, extract_thumbnail,
@@ -60,6 +62,7 @@ def _table_rows(res: VideoResult) -> list[list]:
 
 def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_label,
                  video_model_label, whisper_model_path, min_confidence,
+                 n_parallel, batch_preset, ctx_per_slot,
                  progress=gr.Progress()):
     logs: list[str] = []
 
@@ -89,15 +92,19 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
     use_hybrid = pipeline_label == PIPELINES[1]
     use_video = pipeline_label == PIPELINES[2]
     progress(0.02, desc="Avvio modello...")
+    perf = dict(n_parallel=int(n_parallel), ctx_per_slot=int(ctx_per_slot),
+                batch_preset=batch_preset)
+    log(f"Prestazioni: {perf['n_parallel']} slot paralleli, "
+        f"{perf['ctx_per_slot']} token/slot, batch '{batch_preset}'.")
     try:
         if use_video:
             video_hf, video_mmproj, video_jinja = VIDEO_MODELS[video_model_label]
             SERVER.ensure(video_hf, mmproj_url=video_mmproj,
-                          jinja=video_jinja, log=log)
+                          jinja=video_jinja, log=log, **perf)
         elif use_hybrid:
-            SERVER.ensure(VISION_MODELS[vision_model_label], log=log)
+            SERVER.ensure(VISION_MODELS[vision_model_label], log=log, **perf)
         else:
-            SERVER.ensure(MODELS[model_label], log=log)
+            SERVER.ensure(MODELS[model_label], log=log, **perf)
     except Exception as err:
         log(f"ERRORE avvio modello: {err}")
         yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
@@ -129,9 +136,9 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
             analyze = analyze_window_vision
         else:
             analyze = analyze_window
-        # N_PARALLEL richieste LLM in volo (= slot llama-server) + whisper su
-        # CPU in parallelo all'analisi vision, per non lasciare ferma la GPU.
-        with ThreadPoolExecutor(max_workers=N_PARALLEL) as llm_pool, \
+        # Tante richieste LLM in volo quanti sono gli slot llama-server +
+        # whisper su CPU in parallelo, per non lasciare ferma la GPU.
+        with ThreadPoolExecutor(max_workers=SERVER.n_parallel) as llm_pool, \
                 ThreadPoolExecutor(max_workers=1) as bg_pool:
             transcript_future = None
             if use_modular:
@@ -245,6 +252,25 @@ def build_ui() -> gr.Blocks:
                 )
                 conf_in = gr.Slider(0.0, 1.0, value=0.5, step=0.05,
                                     label="Soglia confidence")
+                with gr.Accordion("⚡ Prestazioni (GPU)", open=False):
+                    gr.Markdown(
+                        "Su GPU dedicate potenti alza slot e batch per saturare la "
+                        "scheda; su iGPU o poca VRAM lascia i default. Cambiare "
+                        "questi valori riavvia il modello alla prossima analisi."
+                    )
+                    parallel_in = gr.Slider(
+                        1, 8, value=N_PARALLEL, step=1,
+                        label="Finestre analizzate in parallelo (slot llama-server)",
+                        info="2 per iGPU, 4-8 per GPU dedicate. Ogni slot usa VRAM aggiuntiva.")
+                    batch_in = gr.Dropdown(
+                        choices=list(BATCH_PRESETS.keys()),
+                        value=DEFAULT_BATCH_PRESET,
+                        label="Preset batch (velocita' di elaborazione del prompt)",
+                        info="Batch grandi accelerano immagini/audio ma usano piu' VRAM.")
+                    ctx_in = gr.Slider(
+                        4096, 32768, value=min(32768, CTX_PER_SLOT), step=4096,
+                        label="Contesto per slot (token)",
+                        info="8192 basta per le finestre standard; alza solo se compaiono errori di contesto.")
                 run_btn = gr.Button("🔍 Analizza", variant="primary")
                 logs_out = gr.Textbox(label="Log", lines=14, interactive=False)
             with gr.Column(scale=2):
@@ -264,7 +290,8 @@ def build_ui() -> gr.Blocks:
         run_btn.click(
             run_analysis,
             [files_in, urls_in, pipeline_in, model_in, vision_model_in,
-             video_model_in, whisper_model_in, conf_in],
+             video_model_in, whisper_model_in, conf_in,
+             parallel_in, batch_in, ctx_in],
             outputs,
         )
         video_sel.change(select_video, [video_sel],

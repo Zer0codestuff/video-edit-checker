@@ -61,10 +61,19 @@ DEFAULT_VIDEO_MODEL_LABEL = "MiniCPM-o 4.5 Q4_K_M (video nativo 8B, ~7 GB RAM)"
 HOST = "http://127.0.0.1:8090"
 PORT = 8090
 
-# Richieste simultanee al server (slot llama.cpp + thread nell'app).
-# 2 va bene su iGPU; su GPU dedicate potenti alzare con VEC_PARALLEL=4.
+# Valori di default (sovrascrivibili da env e dalla UI, sezione Prestazioni).
+# 2 slot vanno bene su iGPU; su GPU dedicate potenti alzare a 4-8.
 N_PARALLEL = max(1, int(os.environ.get("VEC_PARALLEL", "2")))
 CTX_PER_SLOT = max(4096, int(os.environ.get("VEC_CTX_PER_SLOT", "8192")))
+
+# Preset batch: (logical batch -b, physical batch -ub). Batch piu' grandi
+# accelerano il prompt processing (molte immagini/audio) a costo di piu' VRAM.
+BATCH_PRESETS: dict[str, tuple[int, int]] = {
+    "Conservativo (iGPU / poca VRAM)": (2048, 512),
+    "Bilanciato (GPU dedicata)": (4096, 1024),
+    "Aggressivo (GPU potente, >=12 GB VRAM)": (8192, 2048),
+}
+DEFAULT_BATCH_PRESET = "Conservativo (iGPU / poca VRAM)"
 
 
 class LlamaServer:
@@ -77,6 +86,7 @@ class LlamaServer:
     def __init__(self) -> None:
         self.proc: subprocess.Popen | None = None
         self.current_key: str | None = None
+        self.n_parallel: int = N_PARALLEL  # slot effettivi dell'istanza corrente
         atexit.register(self.stop)
 
     def is_running(self) -> bool:
@@ -129,7 +139,9 @@ class LlamaServer:
             pass
 
     def ensure(self, hf_model: str, mmproj_url: str | None = None,
-               jinja: bool = False, log=print) -> None:
+               jinja: bool = False, n_parallel: int | None = None,
+               ctx_per_slot: int | None = None,
+               batch_preset: str | None = None, log=print) -> None:
         """Garantisce che il server giri con il modello richiesto.
 
         `mmproj_url` serve per i repo che tengono il proiettore multimodale
@@ -137,8 +149,16 @@ class LlamaServer:
         cachato da llama-server come il modello principale.
         `jinja` abilita il template jinja del modello: necessario per i
         modelli thinking ibridi che devono ricevere enable_thinking=false.
+        `n_parallel`/`ctx_per_slot`/`batch_preset` sovrascrivono i default
+        (UI, sezione Prestazioni); al cambio il server viene riavviato.
         """
-        key = f"{hf_model}|{mmproj_url or ''}|{jinja}"
+        n_parallel = max(1, int(n_parallel or N_PARALLEL))
+        ctx_per_slot = max(4096, int(ctx_per_slot or CTX_PER_SLOT))
+        batch, ubatch = BATCH_PRESETS.get(batch_preset or "",
+                                          BATCH_PRESETS[DEFAULT_BATCH_PRESET])
+        key = (f"{hf_model}|{mmproj_url or ''}|{jinja}"
+               f"|{n_parallel}|{ctx_per_slot}|{batch}|{ubatch}")
+        self.n_parallel = n_parallel
         if self.is_running() and self.current_key == key:
             return
         self.stop()
@@ -154,10 +174,10 @@ class LlamaServer:
             "-hf", hf_model,
             "--port", str(PORT),
             "-ngl", "999",
-            "-c", str(CTX_PER_SLOT * N_PARALLEL),
-            "-np", str(N_PARALLEL),
-            "-b", "2048",
-            "-ub", "512",
+            "-c", str(ctx_per_slot * n_parallel),
+            "-np", str(n_parallel),
+            "-b", str(batch),
+            "-ub", str(ubatch),
             "--reasoning-budget", "0",
             "--no-webui",
         ]
