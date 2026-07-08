@@ -86,3 +86,73 @@ def export_csv(video_name: str, errors: list[EditError], out_path: Path) -> Path
             writer.writerow([video_name, e.type, fmt_time(e.start), fmt_time(e.end),
                              e.description, f"{e.confidence:.2f}"])
     return out_path
+
+
+def export_batch(results: dict[str, list[EditError]], out_json: Path,
+                 out_csv: Path) -> tuple[Path, Path]:
+    """Esporta il report combinato di tutti i video di una run (playlist)."""
+    data = {
+        "videos": [
+            {
+                "video": name,
+                "error_count": len(errors),
+                "errors": [
+                    {
+                        "type": e.type,
+                        "label": ERROR_TYPES.get(e.type, e.type),
+                        "start": fmt_time(e.start),
+                        "end": fmt_time(e.end),
+                        "description": e.description,
+                        "confidence": round(e.confidence, 2),
+                    }
+                    for e in errors
+                ],
+            }
+            for name, errors in results.items()
+        ],
+        "total_errors": sum(len(v) for v in results.values()),
+    }
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    out_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    with out_csv.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["video", "tipo", "inizio", "fine", "descrizione", "confidence"])
+        for name, errors in results.items():
+            for e in errors:
+                writer.writerow([name, e.type, fmt_time(e.start), fmt_time(e.end),
+                                 e.description, f"{e.confidence:.2f}"])
+    return out_json, out_csv
+
+
+def batch_summary_md(results: dict[str, list[EditError]]) -> str:
+    """Riepilogo markdown della run: una riga per video + dettaglio errori."""
+    if not results:
+        return "Nessun video analizzato."
+    total = sum(len(v) for v in results.values())
+    clean = sum(1 for v in results.values() if not v)
+    lines = [
+        f"## 📊 Riepilogo run — {len(results)} video, "
+        f"{total} error{'e' if total == 1 else 'i'} "
+        f"({clean} video pulit{'o' if clean == 1 else 'i'})",
+        "",
+        "| Video | Errori | Tipi rilevati |",
+        "|---|---|---|",
+    ]
+    for name, errors in results.items():
+        if errors:
+            counts: dict[str, int] = {}
+            for e in errors:
+                counts[e.label] = counts.get(e.label, 0) + 1
+            types = ", ".join(f"{lbl} ×{n}" for lbl, n in counts.items())
+            lines.append(f"| {name} | {len(errors)} | {types} |")
+        else:
+            lines.append(f"| {name} | 0 | ✅ nessun errore |")
+    for name, errors in results.items():
+        if not errors:
+            continue
+        lines += ["", f"### {name}"]
+        for e in errors:
+            lines.append(
+                f"- {e.label} `{fmt_time(e.start)}–{fmt_time(e.end)}` "
+                f"(conf {e.confidence:.2f}): {e.description}")
+    return "\n".join(lines)

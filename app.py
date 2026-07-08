@@ -24,8 +24,9 @@ from core.llama_server import (BATCH_PRESETS, CTX_PER_SLOT,
                                DEFAULT_VIDEO_MODEL_LABEL,
                                DEFAULT_VISION_MODEL_LABEL, MODELS, N_PARALLEL,
                                SERVER, VIDEO_MODELS, VISION_MODELS)
-from core.report import (export_csv, export_json, extract_thumbnail,
-                         filter_errors, fmt_time, merge_errors)
+from core.report import (batch_summary_md, export_batch, export_csv,
+                         export_json, extract_thumbnail, filter_errors,
+                         fmt_time, merge_errors)
 from core.video_analyzer import analyze_window_video
 from core.vision_analyzer import analyze_window_vision
 from core.whisper_cpp import (detect_transcript_errors, find_default_model,
@@ -38,6 +39,14 @@ PIPELINES = [
     "Vision + whisper.cpp (leggero, modulare)",
     "Video nativo + whisper.cpp (clip mp4 al modello, sperimentale)",
 ]
+
+CSS = """
+.gradio-container {max-width: 1600px !important}
+#summary-box {border: 1px solid var(--border-color-primary); border-radius: 8px;
+              padding: 12px 16px; max-height: 520px; overflow-y: auto}
+#logs-box textarea {font-family: var(--font-mono); font-size: 12px}
+footer {display: none !important}
+"""
 
 
 @dataclass
@@ -72,6 +81,10 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
     def logs_text() -> str:
         return "\n".join(logs[-200:])
 
+    def partial():
+        """Yield intermedio: aggiorna solo i log."""
+        return (logs_text(),) + (gr.update(),) * 9
+
     run_dir = RUNS_DIR / time.strftime("run_%Y-%m-%d_%H-%M-%S")
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -82,11 +95,11 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
         videos += download_youtube(urls_text, log=log)
     if not videos:
         log("Nessun video da analizzare: carica un file o inserisci un URL.")
-        yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        yield partial()
         return
 
     log(f"{len(videos)} video in coda.")
-    yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+    yield partial()
 
     # 2. Avvia il modello richiesto
     use_hybrid = pipeline_label == PIPELINES[1]
@@ -107,11 +120,12 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
             SERVER.ensure(MODELS[model_label], log=log, **perf)
     except Exception as err:
         log(f"ERRORE avvio modello: {err}")
-        yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        yield partial()
         return
-    yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+    yield partial()
 
     # 3. Analizza in sequenza
+    run_results: dict[str, list[EditError]] = {}
     total = len(videos)
     for v_i, video in enumerate(videos):
         name = video.stem
@@ -169,7 +183,7 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                             f"(conf {e.confidence:.2f}): {e.description}")
                 raw_errors.extend(found)
                 if w_i % 3 == 0:
-                    yield logs_text(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+                    yield partial()
 
             if transcript_future is not None:
                 segments = transcript_future.result()
@@ -190,13 +204,26 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
         res.json_path = export_json(name, errors, vdir / f"{name}_report.json")
         res.csv_path = export_csv(name, errors, vdir / f"{name}_report.csv")
         RESULTS[name] = res
+        run_results[name] = errors
 
         yield (logs_text(),
                gr.update(choices=list(RESULTS.keys()), value=name),
                str(res.video_path), _table_rows(res), res.thumbnails,
-               str(res.json_path), str(res.csv_path))
+               str(res.json_path), str(res.csv_path),
+               batch_summary_md(run_results), gr.update(), gr.update())
 
+    # 4. Riepilogo finale della run (playlist)
     log("Analisi completata.")
+    summary = batch_summary_md(run_results)
+    batch_json = batch_csv = None
+    if run_results:
+        batch_json, batch_csv = export_batch(
+            run_results, run_dir / "playlist_report.json",
+            run_dir / "playlist_report.csv")
+        total_err = sum(len(v) for v in run_results.values())
+        log(f"Riepilogo: {total_err} errori totali in {len(run_results)} video. "
+            "Report combinato pronto nella scheda Riepilogo.")
+
     last = list(RESULTS.values())[-1] if RESULTS else None
     yield (logs_text(),
            gr.update(choices=list(RESULTS.keys()),
@@ -205,7 +232,10 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
            _table_rows(last) if last else [],
            last.thumbnails if last else [],
            str(last.json_path) if last and last.json_path else None,
-           str(last.csv_path) if last and last.csv_path else None)
+           str(last.csv_path) if last and last.csv_path else None,
+           summary,
+           str(batch_json) if batch_json else None,
+           str(batch_csv) if batch_csv else None)
 
 
 def select_video(name):
@@ -215,6 +245,17 @@ def select_video(name):
     return (str(res.video_path), _table_rows(res), res.thumbnails,
             str(res.json_path) if res.json_path else None,
             str(res.csv_path) if res.csv_path else None)
+
+
+def _toggle_pipeline(pipeline_label):
+    """Mostra solo i controlli rilevanti per la pipeline scelta."""
+    omni = pipeline_label == PIPELINES[0]
+    hybrid = pipeline_label == PIPELINES[1]
+    native = pipeline_label == PIPELINES[2]
+    return (gr.update(visible=omni),          # modello omni
+            gr.update(visible=hybrid),        # modello vision
+            gr.update(visible=native),        # modello video nativo
+            gr.update(visible=hybrid or native))  # path whisper
 
 
 def build_ui() -> gr.Blocks:
@@ -227,12 +268,14 @@ def build_ui() -> gr.Blocks:
         default_whisper = find_default_model()
         with gr.Row():
             with gr.Column(scale=1):
+                gr.Markdown("### 📥 Sorgenti")
                 files_in = gr.File(label="Video locali", file_count="multiple",
                                    file_types=["video"], type="filepath")
                 urls_in = gr.Textbox(
                     label="URL YouTube (uno per riga, anche playlist)",
                     placeholder="https://www.youtube.com/watch?v=...\nhttps://www.youtube.com/playlist?list=...",
                     lines=3)
+                gr.Markdown("### 🧠 Modello")
                 pipeline_in = gr.Radio(choices=PIPELINES, value=PIPELINES[0],
                                        label="Pipeline")
                 model_in = gr.Dropdown(choices=list(MODELS.keys()),
@@ -240,18 +283,21 @@ def build_ui() -> gr.Blocks:
                                        label="Modello omni (audio + visione)")
                 vision_model_in = gr.Dropdown(choices=list(VISION_MODELS.keys()),
                                               value=DEFAULT_VISION_MODEL_LABEL,
-                                              label="Modello vision-only")
+                                              label="Modello vision-only",
+                                              visible=False)
                 video_model_in = gr.Dropdown(choices=list(VIDEO_MODELS.keys()),
                                              value=DEFAULT_VIDEO_MODEL_LABEL,
-                                             label="Modello video nativo")
+                                             label="Modello video nativo",
+                                             visible=False)
                 whisper_model_in = gr.Textbox(
                     label="Path modello whisper.cpp",
                     value=str(default_whisper) if default_whisper else "",
                     placeholder="vuoto = download automatico ggml-large-v3-turbo-q5_0.bin",
-                    lines=1,
+                    lines=1, visible=False,
                 )
                 conf_in = gr.Slider(0.0, 1.0, value=0.5, step=0.05,
-                                    label="Soglia confidence")
+                                    label="Soglia confidence",
+                                    info="Alza per meno falsi positivi, abbassa per piu' segnalazioni.")
                 with gr.Accordion("⚡ Prestazioni (GPU)", open=False):
                     gr.Markdown(
                         "Su GPU dedicate potenti alza slot e batch per saturare la "
@@ -271,22 +317,38 @@ def build_ui() -> gr.Blocks:
                         4096, 32768, value=min(32768, CTX_PER_SLOT), step=4096,
                         label="Contesto per slot (token)",
                         info="8192 basta per le finestre standard; alza solo se compaiono errori di contesto.")
-                run_btn = gr.Button("🔍 Analizza", variant="primary")
-                logs_out = gr.Textbox(label="Log", lines=14, interactive=False)
+                run_btn = gr.Button("🔍 Analizza", variant="primary", size="lg")
+                logs_out = gr.Textbox(label="Log", lines=14, interactive=False,
+                                      elem_id="logs-box", autoscroll=True)
             with gr.Column(scale=2):
-                video_sel = gr.Dropdown(choices=[], label="Risultati per video",
-                                        interactive=True)
-                player = gr.Video(label="Video", interactive=False)
-                table = gr.Dataframe(
-                    headers=["Tipo", "Inizio", "Fine", "Descrizione", "Confidence"],
-                    label="Errori trovati", interactive=False, wrap=True)
-                gallery = gr.Gallery(label="Screenshot degli errori", columns=3,
-                                     height="auto")
-                with gr.Row():
-                    json_out = gr.File(label="Report JSON")
-                    csv_out = gr.File(label="Report CSV")
+                with gr.Tabs():
+                    with gr.Tab("📊 Riepilogo run"):
+                        summary_out = gr.Markdown(
+                            "Il riepilogo di tutti i video della run (playlist) "
+                            "comparira' qui alla fine dell'analisi.",
+                            elem_id="summary-box")
+                        with gr.Row():
+                            batch_json_out = gr.File(label="Report combinato JSON")
+                            batch_csv_out = gr.File(label="Report combinato CSV")
+                    with gr.Tab("🎞️ Dettaglio video"):
+                        video_sel = gr.Dropdown(choices=[], label="Risultati per video",
+                                                interactive=True)
+                        player = gr.Video(label="Video", interactive=False)
+                        table = gr.Dataframe(
+                            headers=["Tipo", "Inizio", "Fine", "Descrizione", "Confidence"],
+                            label="Errori trovati", interactive=False, wrap=True)
+                        gallery = gr.Gallery(label="Screenshot degli errori", columns=3,
+                                             height="auto")
+                        with gr.Row():
+                            json_out = gr.File(label="Report JSON")
+                            csv_out = gr.File(label="Report CSV")
 
-        outputs = [logs_out, video_sel, player, table, gallery, json_out, csv_out]
+        pipeline_in.change(_toggle_pipeline, [pipeline_in],
+                           [model_in, vision_model_in, video_model_in,
+                            whisper_model_in])
+
+        outputs = [logs_out, video_sel, player, table, gallery, json_out, csv_out,
+                   summary_out, batch_json_out, batch_csv_out]
         run_btn.click(
             run_analysis,
             [files_in, urls_in, pipeline_in, model_in, vision_model_in,
@@ -310,4 +372,8 @@ if __name__ == "__main__":
     if not has_whisper():
         print("Avviso: whisper-cli non trovato; la pipeline ibrida non avra' "
               "l'analisi audio. Esegui `python install.py` per installarlo.")
-    build_ui().launch(server_name="127.0.0.1", server_port=7860)
+    build_ui().launch(
+        server_name="127.0.0.1", server_port=7860,
+        theme=gr.themes.Soft(primary_hue="indigo", neutral_hue="slate"),
+        css=CSS,
+    )
