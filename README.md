@@ -50,6 +50,7 @@ L'interfaccia web sara disponibile su **http://127.0.0.1:7860**. Al primo "Anali
 2. Scegli la **pipeline**:
    - **Omni VLM**: un solo modello che vede e sente (audio + visione)
    - **Vision + whisper.cpp** (consigliata sui PC leggeri): euristiche pixel + modello vision-only per i frame + whisper.cpp per l'audio
+   - **Video nativo + whisper.cpp** (sperimentale): la clip mp4 di ogni finestra viene passata direttamente al modello, che la campiona a 4 fps (~12x piu frame della pipeline ibrida)
 3. Premi **Analizza** e consulta gli errori nella **tabella** e nella **galleria di screenshot**.
 4. Scarica il **report JSON o CSV** per ogni video.
 
@@ -73,6 +74,18 @@ L'interfaccia web sara disponibile su **http://127.0.0.1:7860**. Al primo "Anali
 | `Qwen2.5-VL-3B-Instruct` | 3B | Piu accurato |
 
 L'audio della pipeline ibrida usa whisper.cpp con `ggml-large-v3-turbo-q5_0` (scaricato automaticamente al primo uso).
+
+### Pipeline video nativa (input_video + whisper.cpp)
+
+| Modello video | Parametri | Note |
+|---------------|-----------|------|
+| `openbmb/MiniCPM-o-4_5-gguf` Q4_K_M | 8B | Default, percezione molto migliore, ~7 GB RAM |
+| `openbmb/MiniCPM-V-4.6-gguf` Q4_K_M | 0.8B | Leggero, ~2 GB RAM |
+| `openbmb/MiniCPM-V-4.6-gguf` Q8_0 | 0.8B | Leggero, meno quantizzato |
+
+Nota su MiniCPM-o 4.5: e' un modello omni (visione+audio+TTS), ma in llama.cpp mainline funziona solo la parte visiva; l'audio resta a whisper.cpp. Il proiettore vision (~1 GB) viene scaricato automaticamente al primo uso.
+
+La clip mp4 di ogni finestra viene inviata a `llama-server` come `input_video`: il server la decodifica internamente con ffmpeg a **4 fps** e aggiunge marcatori temporali automatici. Richiede una build di llama.cpp di giugno 2026 o successiva (l'installer scarica sempre l'ultima release, basta rilanciare `python install.py`).
 
 ## Prestazioni e GPU dedicate
 

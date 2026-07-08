@@ -20,6 +20,7 @@ class Window:
     frame_paths: list[Path] = field(default_factory=list)
     frame_times: list[float] = field(default_factory=list)  # assoluti
     audio_path: Path | None = None
+    clip_path: Path | None = None  # clip mp4 per la pipeline video nativa
 
 
 def probe_duration(video: Path) -> float:
@@ -58,12 +59,33 @@ def _extract_all_frames(video: Path, out_dir: Path) -> list[tuple[float, Path]]:
             for i, p in enumerate(sorted(out_dir.glob("frame_*.jpg")))]
 
 
+def _extract_clip(video: Path, start: float, duration: float, dest: Path) -> Path | None:
+    """Estrae una clip mp4 ridimensionata e senza audio per input_video.
+
+    llama-server decodifica la clip internamente via ffmpeg a 4 fps;
+    ridurre la risoluzione qui abbassa i tempi di decodifica e upload.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.3f}",
+         "-t", f"{duration:.3f}", "-i", str(video), "-an",
+         "-vf", f"scale='min({FRAME_MAX_SIDE},iw)':-2",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+         "-movflags", "+faststart", str(dest)],
+        capture_output=True, check=False,
+    )
+    if dest.exists() and dest.stat().st_size > 0:
+        return dest
+    return None
+
+
 def make_windows(video: Path, workdir: Path, log=print,
-                 with_audio: bool = True) -> list[Window]:
+                 with_audio: bool = True, with_clips: bool = False) -> list[Window]:
     """Crea le finestre riusando i frame estratti in un unico passaggio.
 
     L'audio per finestra viene estratto solo se richiesto (pipeline omni);
-    la pipeline ibrida usa whisper.cpp sull'audio intero.
+    la pipeline ibrida usa whisper.cpp sull'audio intero. Le clip mp4
+    servono solo alla pipeline video nativa (input_video).
     """
     duration = probe_duration(video)
     audio_ok = with_audio and has_audio(video)
@@ -99,6 +121,10 @@ def make_windows(video: Path, workdir: Path, log=print,
             )
             if audio_path.exists():
                 win.audio_path = audio_path
+
+        if with_clips:
+            win.clip_path = _extract_clip(
+                video, start, win_dur, workdir / f"win_{idx:04d}" / "clip.mp4")
 
         if win.frame_paths:
             windows.append(win)

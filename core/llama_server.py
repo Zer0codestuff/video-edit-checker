@@ -36,6 +36,28 @@ VISION_MODELS: dict[str, str] = {
 }
 DEFAULT_VISION_MODEL_LABEL = "LiquidAI LFM2.5-VL 1.6B Q8 (vision-only, leggero)"
 
+# Modelli per la pipeline video nativa: llama-server decodifica le clip mp4
+# internamente (input_video, richiede build >= giugno 2026 + ffmpeg nel PATH)
+# campionando i frame a 4 fps. Valori: (repo_hf, mmproj_url | None, jinja).
+# MiniCPM-o 4.5 tiene il proiettore vision in una sottocartella non standard,
+# quindi l'auto-download del mmproj non lo trova: serve l'URL esplicito.
+# Essendo un modello thinking ibrido richiede anche --jinja, cosi' il payload
+# puo' disattivare il ragionamento con enable_thinking=false (senza, brucia
+# tutti i token in reasoning_content e il content resta vuoto).
+# NB: la parte audio di MiniCPM-o funziona solo col framework llama.cpp-omni
+# di OpenBMB, non con llama-server mainline: qui e' usato come modello vision.
+_MINICPM_O_MMPROJ = ("https://huggingface.co/openbmb/MiniCPM-o-4_5-gguf"
+                     "/resolve/main/vision/MiniCPM-o-4_5-vision-F16.gguf")
+VIDEO_MODELS: dict[str, tuple[str, str | None, bool]] = {
+    "MiniCPM-o 4.5 Q4_K_M (video nativo 8B, ~7 GB RAM)":
+        ("openbmb/MiniCPM-o-4_5-gguf:Q4_K_M", _MINICPM_O_MMPROJ, True),
+    "MiniCPM-V 4.6 Q4_K_M (video nativo, leggero, ~2 GB RAM)":
+        ("openbmb/MiniCPM-V-4.6-gguf:Q4_K_M", None, False),
+    "MiniCPM-V 4.6 Q8_0 (video nativo, leggero, meno quantizzato)":
+        ("openbmb/MiniCPM-V-4.6-gguf:Q8_0", None, False),
+}
+DEFAULT_VIDEO_MODEL_LABEL = "MiniCPM-o 4.5 Q4_K_M (video nativo 8B, ~7 GB RAM)"
+
 HOST = "http://127.0.0.1:8090"
 PORT = 8090
 
@@ -54,7 +76,7 @@ class LlamaServer:
 
     def __init__(self) -> None:
         self.proc: subprocess.Popen | None = None
-        self.current_hf: str | None = None
+        self.current_key: str | None = None
         atexit.register(self.stop)
 
     def is_running(self) -> bool:
@@ -71,7 +93,7 @@ class LlamaServer:
                 except Exception:
                     pass
             self.proc = None
-            self.current_hf = None
+            self.current_key = None
 
     def _kill_port_holders(self, log=print) -> None:
         """Uccide eventuali processi esterni che tengono la porta PORT."""
@@ -106,9 +128,18 @@ class LlamaServer:
         except Exception:
             pass
 
-    def ensure(self, hf_model: str, log=print) -> None:
-        """Garantisce che il server giri con il modello richiesto."""
-        if self.is_running() and self.current_hf == hf_model:
+    def ensure(self, hf_model: str, mmproj_url: str | None = None,
+               jinja: bool = False, log=print) -> None:
+        """Garantisce che il server giri con il modello richiesto.
+
+        `mmproj_url` serve per i repo che tengono il proiettore multimodale
+        in un percorso non standard (es. MiniCPM-o 4.5): viene scaricato e
+        cachato da llama-server come il modello principale.
+        `jinja` abilita il template jinja del modello: necessario per i
+        modelli thinking ibridi che devono ricevere enable_thinking=false.
+        """
+        key = f"{hf_model}|{mmproj_url or ''}|{jinja}"
+        if self.is_running() and self.current_key == key:
             return
         self.stop()
         self._kill_port_holders(log=log)
@@ -130,6 +161,10 @@ class LlamaServer:
             "--reasoning-budget", "0",
             "--no-webui",
         ]
+        if mmproj_url:
+            cmd += ["--mmproj-url", mmproj_url]
+        if jinja:
+            cmd += ["--jinja"]
         # MTP speculative decoding: il drafter e' auto-scoperto da -hf.
         # Richiede build llama.cpp recente (>= b9500 circa).
         if hf_model in MTP_MODELS:
@@ -141,7 +176,7 @@ class LlamaServer:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        self.current_hf = hf_model
+        self.current_key = key
         self._wait_ready(log=log)
 
     def _wait_ready(self, timeout_s: float = 1800.0, log=print) -> None:

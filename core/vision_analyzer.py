@@ -12,27 +12,41 @@ from core.windows import Window
 def _build_prompt(win: Window) -> str:
     frame_times = ", ".join(f"{t:.1f}" for t in win.frame_times)
     return (
-        "Sei un assistente esperto di montaggio video. Ricevi solo frame video, "
-        "senza audio. Devi rilevare esclusivamente errori visivi di montaggio.\n\n"
-        f"La finestra copre i secondi {win.start:.1f}-{win.start + win.duration:.1f}. "
-        f"I frame disponibili sono ai secondi assoluti: {frame_times}.\n\n"
-        "Cerca: black_screen, frozen_frame, tagli visivi strani, frame corrotti, "
-        "inquadrature palesemente accidentali. Non inventare problemi audio o frasi ripetute.\n"
-        "IMPORTANTE: nella maggior parte delle finestre NON c'e' alcun errore, e la "
-        "risposta corretta e' {\"errors\": []}. Segnala black_screen SOLO se il frame "
-        "e' davvero quasi tutto nero: se contiene slide, testo, grafica o persone "
-        "visibili NON e' uno schermo nero. Basati esclusivamente su cio' che vedi "
-        "nelle immagini, non sulle etichette testuali.\n"
-        "Rispondi solo con JSON: {\"errors\": [{\"type\": \"black_screen\", "
-        "\"start\": 1.0, \"end\": 2.0, \"description\": \"...\", \"confidence\": 0.8}]}.\n"
-        "Se non vedi errori, rispondi {\"errors\": []}."
+        "You are an expert video editor reviewing raw footage for VISUAL "
+        "editing errors. You receive only video frames, no audio.\n\n"
+        f"The window covers seconds {win.start:.1f}-{win.start + win.duration:.1f} "
+        f"of the video. The frames are at these absolute seconds: {frame_times}. "
+        "Each frame is preceded by a label \"[Frame at second X]\": use EXACTLY "
+        "those values for start/end.\n\n"
+        "Error types to detect:\n"
+        "- \"black_screen\": frame completely or almost completely black\n"
+        "- \"frozen_frame\": identical image across several consecutive frames\n"
+        "- \"missed_cut\": obvious accidental shots or visual dead time\n"
+        "- \"other\": corrupted frames, strange glitches, any other obvious "
+        "visual editing error\n"
+        "Never invent audio problems or repeated sentences: you cannot hear "
+        "anything.\n\n"
+        "CRITICAL RULES:\n"
+        "- Most windows contain NO errors: the correct answer is usually "
+        "{\"errors\": []}. Only report errors you are reasonably confident about.\n"
+        "- Report \"black_screen\" ONLY if the frame is truly almost entirely "
+        "black. If it shows slides, text, graphics or visible people, it is "
+        "NOT a black screen.\n"
+        "- Judge only from what you actually see in the images, never from the "
+        "text labels alone.\n"
+        "- Set \"confidence\" honestly: 0.9+ only for unmistakable errors.\n\n"
+        "Reply with ONLY one valid JSON object, no other text: "
+        "{\"errors\": [{\"type\": \"black_screen\", \"start\": 1.0, \"end\": 2.0, "
+        "\"description\": \"<short explanation written in Italian>\", "
+        "\"confidence\": 0.8}]}\n"
+        "If you see no errors, reply {\"errors\": []}."
     )
 
 
 def analyze_window_vision(win: Window, timeout: float = 600.0, log=print) -> list[EditError]:
     content: list[dict] = [{"type": "text", "text": _build_prompt(win)}]
     for fp, ft in zip(win.frame_paths, win.frame_times):
-        content.append({"type": "text", "text": f"[Frame al secondo {ft:.1f}]"})
+        content.append({"type": "text", "text": f"[Frame at second {ft:.1f}]"})
         content.append({
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{_b64(fp)}"},

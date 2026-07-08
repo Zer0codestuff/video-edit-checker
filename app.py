@@ -19,10 +19,12 @@ from core.analyzer import EditError, analyze_window
 from core.binaries import has_whisper, missing_required, setup_path
 from core.heuristics import detect_visual_heuristics, verify_visual_errors
 from core.ingest import collect_local_files, download_youtube
-from core.llama_server import (DEFAULT_MODEL_LABEL, DEFAULT_VISION_MODEL_LABEL,
-                               MODELS, N_PARALLEL, SERVER, VISION_MODELS)
+from core.llama_server import (DEFAULT_MODEL_LABEL, DEFAULT_VIDEO_MODEL_LABEL,
+                               DEFAULT_VISION_MODEL_LABEL, MODELS, N_PARALLEL,
+                               SERVER, VIDEO_MODELS, VISION_MODELS)
 from core.report import (export_csv, export_json, extract_thumbnail,
                          filter_errors, fmt_time, merge_errors)
+from core.video_analyzer import analyze_window_video
 from core.vision_analyzer import analyze_window_vision
 from core.whisper_cpp import (detect_transcript_errors, find_default_model,
                               transcribe_video)
@@ -32,6 +34,7 @@ RUNS_DIR = Path(__file__).resolve().parent / "runs"
 PIPELINES = [
     "Omni VLM (audio + visione, singolo modello)",
     "Vision + whisper.cpp (leggero, modulare)",
+    "Video nativo + whisper.cpp (clip mp4 al modello, sperimentale)",
 ]
 
 
@@ -56,7 +59,8 @@ def _table_rows(res: VideoResult) -> list[list]:
 
 
 def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_label,
-                 whisper_model_path, min_confidence, progress=gr.Progress()):
+                 video_model_label, whisper_model_path, min_confidence,
+                 progress=gr.Progress()):
     logs: list[str] = []
 
     def log(msg: str):
@@ -83,9 +87,14 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
 
     # 2. Avvia il modello richiesto
     use_hybrid = pipeline_label == PIPELINES[1]
+    use_video = pipeline_label == PIPELINES[2]
     progress(0.02, desc="Avvio modello...")
     try:
-        if use_hybrid:
+        if use_video:
+            video_hf, video_mmproj, video_jinja = VIDEO_MODELS[video_model_label]
+            SERVER.ensure(video_hf, mmproj_url=video_mmproj,
+                          jinja=video_jinja, log=log)
+        elif use_hybrid:
             SERVER.ensure(VISION_MODELS[vision_model_label], log=log)
         else:
             SERVER.ensure(MODELS[model_label], log=log)
@@ -103,23 +112,34 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
         vdir = run_dir / f"video_{v_i:02d}_{name[:40]}"
         vdir.mkdir(parents=True, exist_ok=True)
 
+        use_modular = use_hybrid or use_video
         try:
             wins = make_windows(video, vdir / "windows", log=log,
-                                with_audio=not use_hybrid)
+                                with_audio=not use_modular,
+                                with_clips=use_video)
         except Exception as err:
             log(f"ERRORE ffmpeg su '{name}': {err}")
             continue
         log(f"{len(wins)} finestre da analizzare.")
 
         raw_errors: list[EditError] = []
-        analyze = analyze_window_vision if use_hybrid else analyze_window
+        if use_video:
+            analyze = analyze_window_video
+        elif use_hybrid:
+            analyze = analyze_window_vision
+        else:
+            analyze = analyze_window
         # N_PARALLEL richieste LLM in volo (= slot llama-server) + whisper su
         # CPU in parallelo all'analisi vision, per non lasciare ferma la GPU.
         with ThreadPoolExecutor(max_workers=N_PARALLEL) as llm_pool, \
                 ThreadPoolExecutor(max_workers=1) as bg_pool:
             transcript_future = None
-            if use_hybrid:
-                log("Pipeline ibrida: euristiche visive + whisper.cpp + modello vision-only.")
+            if use_modular:
+                if use_video:
+                    log("Pipeline video nativa: euristiche visive + whisper.cpp "
+                        "+ clip mp4 al modello video.")
+                else:
+                    log("Pipeline ibrida: euristiche visive + whisper.cpp + modello vision-only.")
                 raw_errors.extend(detect_visual_heuristics(wins, log=log))
                 transcript_future = bg_pool.submit(
                     transcribe_video,
@@ -214,6 +234,9 @@ def build_ui() -> gr.Blocks:
                 vision_model_in = gr.Dropdown(choices=list(VISION_MODELS.keys()),
                                               value=DEFAULT_VISION_MODEL_LABEL,
                                               label="Modello vision-only")
+                video_model_in = gr.Dropdown(choices=list(VIDEO_MODELS.keys()),
+                                             value=DEFAULT_VIDEO_MODEL_LABEL,
+                                             label="Modello video nativo")
                 whisper_model_in = gr.Textbox(
                     label="Path modello whisper.cpp",
                     value=str(default_whisper) if default_whisper else "",
@@ -240,7 +263,8 @@ def build_ui() -> gr.Blocks:
         outputs = [logs_out, video_sel, player, table, gallery, json_out, csv_out]
         run_btn.click(
             run_analysis,
-            [files_in, urls_in, pipeline_in, model_in, vision_model_in, whisper_model_in, conf_in],
+            [files_in, urls_in, pipeline_in, model_in, vision_model_in,
+             video_model_in, whisper_model_in, conf_in],
             outputs,
         )
         video_sel.change(select_video, [video_sel],

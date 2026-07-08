@@ -101,7 +101,7 @@ def analyze_window(win: Window, timeout: float = 600.0, log=print) -> list[EditE
     for fp, ft in zip(win.frame_paths, win.frame_times):
         # Etichetta testuale prima di ogni frame: aiuta il modello a mappare
         # correttamente immagine -> timestamp assoluto.
-        content.append({"type": "text", "text": f"[Frame al secondo {ft:.1f}]"})
+        content.append({"type": "text", "text": f"[Frame at second {ft:.1f}]"})
         content.append({
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{_b64(fp)}"},
