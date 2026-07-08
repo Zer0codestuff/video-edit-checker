@@ -8,6 +8,7 @@ Avvio:  python app.py
 
 from __future__ import annotations
 
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -130,7 +131,10 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
     for v_i, video in enumerate(videos):
         name = video.stem
         log(f"--- Analizzo '{name}' ({v_i + 1}/{total}) ---")
-        vdir = run_dir / f"video_{v_i:02d}_{name[:40]}"
+        # Nome cartella sicuro per Windows: niente caratteri riservati e
+        # niente spazi/punti finali (WinError 3 in caso contrario).
+        safe = re.sub(r'[<>:"/\\|?*]', "_", name)[:40].strip(" .") or "video"
+        vdir = run_dir / f"video_{v_i:02d}_{safe}"
         vdir.mkdir(parents=True, exist_ok=True)
 
         use_modular = use_hybrid or use_video
@@ -322,14 +326,6 @@ def build_ui() -> gr.Blocks:
                                       elem_id="logs-box", autoscroll=True)
             with gr.Column(scale=2):
                 with gr.Tabs():
-                    with gr.Tab("📊 Riepilogo run"):
-                        summary_out = gr.Markdown(
-                            "Il riepilogo di tutti i video della run (playlist) "
-                            "comparira' qui alla fine dell'analisi.",
-                            elem_id="summary-box")
-                        with gr.Row():
-                            batch_json_out = gr.File(label="Report combinato JSON")
-                            batch_csv_out = gr.File(label="Report combinato CSV")
                     with gr.Tab("🎞️ Dettaglio video"):
                         video_sel = gr.Dropdown(choices=[], label="Risultati per video",
                                                 interactive=True)
@@ -342,6 +338,14 @@ def build_ui() -> gr.Blocks:
                         with gr.Row():
                             json_out = gr.File(label="Report JSON")
                             csv_out = gr.File(label="Report CSV")
+                    with gr.Tab("📊 Riepilogo run"):
+                        summary_out = gr.Markdown(
+                            "Il riepilogo di tutti i video della run (playlist) "
+                            "comparira' qui alla fine dell'analisi.",
+                            elem_id="summary-box")
+                        with gr.Row():
+                            batch_json_out = gr.File(label="Report combinato JSON")
+                            batch_csv_out = gr.File(label="Report combinato CSV")
 
         pipeline_in.change(_toggle_pipeline, [pipeline_in],
                            [model_in, vision_model_in, video_model_in,
@@ -372,8 +376,4 @@ if __name__ == "__main__":
     if not has_whisper():
         print("Avviso: whisper-cli non trovato; la pipeline ibrida non avra' "
               "l'analisi audio. Esegui `python install.py` per installarlo.")
-    build_ui().launch(
-        server_name="127.0.0.1", server_port=7860,
-        theme=gr.themes.Soft(primary_hue="indigo", neutral_hue="slate"),
-        css=CSS,
-    )
+    build_ui().launch(server_name="127.0.0.1", server_port=7860, css=CSS)
