@@ -13,6 +13,7 @@ import requests
 # (per Mac/PC con poca RAM) al più potente (per workstation con molta RAM/VRAM).
 MODELS: dict[str, str] = {
     "Qwen2.5-Omni-3B Q8 (consigliato per test, ~6 GB RAM)": "ggml-org/Qwen2.5-Omni-3B-GGUF:Q8_0",
+    "Gemma 4 E2B QAT (leggero + MTP, ~3 GB RAM)": "unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL",
     "Gemma 4 E2B (default, ~8 GB RAM)": "ggml-org/gemma-4-E2B-it-GGUF",
     "Qwen2.5-Omni-3B Q4 (piu leggero, meno affidabile)": "ggml-org/Qwen2.5-Omni-3B-GGUF:Q4_K_M",
     "Gemma 4 E4B (medio, >=16 GB RAM)": "ggml-org/gemma-4-E4B-it-GGUF",
@@ -20,6 +21,12 @@ MODELS: dict[str, str] = {
     "Qwen3-Omni-30B-A3B (potente, >=32 GB RAM)": "ggml-org/Qwen3-Omni-30B-A3B-Instruct-GGUF",
 }
 DEFAULT_MODEL_LABEL = "Qwen2.5-Omni-3B Q8 (consigliato per test, ~6 GB RAM)"
+
+# Modelli che shippano un drafter MTP (speculative decoding) nel repo HF.
+# llama-server lo auto-scopre con -hf; serve solo attivare i flag.
+MTP_MODELS: set[str] = {
+    "unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL",
+}
 
 VISION_MODELS: dict[str, str] = {
     "LiquidAI LFM2.5-VL 1.6B Q8 (vision-only, leggero)": "LiquidAI/LFM2.5-VL-1.6B-GGUF:Q8_0",
@@ -123,6 +130,10 @@ class LlamaServer:
             "--reasoning-budget", "0",
             "--no-webui",
         ]
+        # Speculative decoding via MTP drafter (auto-scoperto da -hf)
+        if hf_model in MTP_MODELS:
+            cmd += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "4"]
+            log("MTP speculative decoding attivo per questo modello.")
         log(f"Avvio llama-server con {hf_model} (il primo avvio scarica il modello)...")
         self.proc = subprocess.Popen(
             cmd,
