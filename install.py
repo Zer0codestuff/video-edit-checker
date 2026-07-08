@@ -228,9 +228,10 @@ def setup_llama(system: str, gpu: str) -> None:
     assets = github_latest_assets("ggml-org/llama.cpp")
     if system == "Windows":
         if gpu == "nvidia":
-            patterns = [r"bin-win-cuda-c?12.*x64\.zip", r"bin-win-cuda.*x64\.zip"]
+            # ^llama- esclude gli asset cudart-*, che contengono solo il runtime CUDA
+            patterns = [r"^llama-.*bin-win-cuda-c?12.*x64\.zip", r"^llama-.*bin-win-cuda.*x64\.zip"]
         else:
-            patterns = [r"bin-win-vulkan-x64\.zip", r"bin-win-cpu-x64\.zip"]
+            patterns = [r"^llama-.*bin-win-vulkan-x64\.zip", r"^llama-.*bin-win-cpu-x64\.zip"]
     else:  # Linux
         patterns = [r"bin-ubuntu-vulkan-x64", r"bin-ubuntu-x64"]
 
