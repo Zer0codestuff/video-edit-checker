@@ -23,7 +23,8 @@ MODELS: dict[str, str] = {
 DEFAULT_MODEL_LABEL = "Qwen2.5-Omni-3B Q8 (consigliato per test, ~6 GB RAM)"
 
 # Modelli che shippano un drafter MTP (speculative decoding) nel repo HF.
-# llama-server lo auto-scopre con -hf; serve solo attivare i flag.
+# I flag MTP richiedono una build recente di llama.cpp; su build piu' vecchie
+# il drafter viene semplicemente ignorato e il modello gira normalmente.
 MTP_MODELS: set[str] = {
     "unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL",
 }
@@ -130,7 +131,8 @@ class LlamaServer:
             "--reasoning-budget", "0",
             "--no-webui",
         ]
-        # Speculative decoding via MTP drafter (auto-scoperto da -hf)
+        # MTP speculative decoding: il drafter e' auto-scoperto da -hf.
+        # Richiede build llama.cpp recente (>= b9500 circa).
         if hf_model in MTP_MODELS:
             cmd += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "4"]
             log("MTP speculative decoding attivo per questo modello.")

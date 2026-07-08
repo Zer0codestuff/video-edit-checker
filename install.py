@@ -61,6 +61,39 @@ def which_anywhere(name: str) -> str | None:
     return None
 
 
+def _tools_binary(name: str) -> Path | None:
+    """Restituisce il path del binario in tools/ se esiste, altrimenti None."""
+    exe = name + (".exe" if platform.system() == "Windows" else "")
+    if TOOLS.exists():
+        for hit in TOOLS.rglob(exe):
+            if hit.is_file():
+                return hit
+    return None
+
+
+def _llama_version(exe: str | Path) -> int:
+    """Esegue llama-server --version e restituisce il numero di build (0 se fallisce)."""
+    try:
+        res = subprocess.run([str(exe), "--version"], capture_output=True,
+                             text=True, timeout=15)
+        text = (res.stdout or "") + (res.stderr or "")
+        m = re.search(r"version:\s*(\d+)", text)
+        return int(m.group(1)) if m else 0
+    except Exception:
+        return 0
+
+
+def _llama_supports_mtp(exe: str | Path) -> bool:
+    """Verifica che la build supporti --spec-type (MTP speculative decoding)."""
+    try:
+        res = subprocess.run([str(exe), "--help"], capture_output=True,
+                             text=True, timeout=15)
+        text = (res.stdout or "") + (res.stderr or "")
+        return "--spec-type" in text
+    except Exception:
+        return False
+
+
 def download(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     log(f"Scarico {url}")
@@ -170,19 +203,32 @@ def setup_ffmpeg(system: str) -> None:
 
 
 def setup_llama(system: str, gpu: str) -> None:
-    if which_anywhere("llama-server"):
-        log("llama-server gia' presente, salto.")
+    # Preferisce sempre la versione in tools/; se esiste ed e' recente
+    # (supporta MTP), salta il download. Le versioni di sistema vecchie
+    # (es. winget) non bastano: Gemma 4 e MTP richiedono build recenti.
+    tools_exe = _tools_binary("llama-server")
+    if tools_exe and _llama_supports_mtp(tools_exe):
+        log(f"llama-server in tools/ aggiornato (build {_llama_version(tools_exe)}), salto.")
         return
+
     if system == "Darwin":
+        if which_anywhere("llama-server") and not tools_exe:
+            log("llama-server gia' presente di sistema, salto.")
+            return
         if not try_brew("llama.cpp"):
             die("Installa Homebrew (https://brew.sh) e rilancia per ottenere llama.cpp.")
         log("llama-server OK (Metal via Homebrew).")
         return
 
+    # Rimuovi eventuale vecchia versione in tools/llama/
+    if TOOLS.exists():
+        for old in TOOLS.rglob("llama-server*"):
+            old.unlink(missing_ok=True)
+
     assets = github_latest_assets("ggml-org/llama.cpp")
     if system == "Windows":
         if gpu == "nvidia":
-            patterns = [r"bin-win-cuda.*x64\.zip"]
+            patterns = [r"bin-win-cuda-c?12.*x64\.zip", r"bin-win-cuda.*x64\.zip"]
         else:
             patterns = [r"bin-win-vulkan-x64\.zip", r"bin-win-cpu-x64\.zip"]
     else:  # Linux
@@ -202,10 +248,13 @@ def setup_llama(system: str, gpu: str) -> None:
             download(cudart["browser_download_url"], archive)
             extract(archive, TOOLS / "llama")
 
-    if not which_anywhere("llama-server"):
+    new_exe = _tools_binary("llama-server")
+    if not new_exe:
         die("llama-server non trovato dopo l'estrazione.")
+    ver = _llama_version(new_exe)
+    mtp = _llama_supports_mtp(new_exe)
     backend = {"nvidia": "CUDA", "generic": "Vulkan/CPU"}.get(gpu, gpu)
-    log(f"llama-server OK (backend {backend}).")
+    log(f"llama-server OK (build {ver}, backend {backend}, MTP: {'si' if mtp else 'no'}).")
 
 
 def setup_whisper(system: str, gpu: str) -> None:
