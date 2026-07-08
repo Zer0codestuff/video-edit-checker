@@ -9,24 +9,23 @@ import time
 
 import requests
 
-# Modelli GGUF ufficiali ggml-org con input audio+visione, dal più leggero
-# (per Mac/PC con poca RAM) al più potente (per workstation con molta RAM/VRAM).
+# Modelli GGUF Gemma 4 (omni-modali: audio + visione). Le versioni QAT
+# di Unsloth usano meta' memoria a parita' di qualita' e shippano un
+# drafter MTP per speculative decoding.
 MODELS: dict[str, str] = {
-    "Qwen2.5-Omni-3B Q8 (consigliato per test, ~6 GB RAM)": "ggml-org/Qwen2.5-Omni-3B-GGUF:Q8_0",
     "Gemma 4 E2B QAT (leggero + MTP, ~3 GB RAM)": "unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL",
+    "Gemma 4 E4B QAT (piu accurato + MTP, ~5 GB RAM)": "unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL",
     "Gemma 4 E2B (default, ~8 GB RAM)": "ggml-org/gemma-4-E2B-it-GGUF",
-    "Qwen2.5-Omni-3B Q4 (piu leggero, meno affidabile)": "ggml-org/Qwen2.5-Omni-3B-GGUF:Q4_K_M",
     "Gemma 4 E4B (medio, >=16 GB RAM)": "ggml-org/gemma-4-E4B-it-GGUF",
-    "Qwen2.5-Omni-7B (medio, >=16 GB RAM)": "ggml-org/Qwen2.5-Omni-7B-GGUF:Q4_K_M",
-    "Qwen3-Omni-30B-A3B (potente, >=32 GB RAM)": "ggml-org/Qwen3-Omni-30B-A3B-Instruct-GGUF",
 }
-DEFAULT_MODEL_LABEL = "Qwen2.5-Omni-3B Q8 (consigliato per test, ~6 GB RAM)"
+DEFAULT_MODEL_LABEL = "Gemma 4 E2B QAT (leggero + MTP, ~3 GB RAM)"
 
 # Modelli che shippano un drafter MTP (speculative decoding) nel repo HF.
 # I flag MTP richiedono una build recente di llama.cpp; su build piu' vecchie
 # il drafter viene semplicemente ignorato e il modello gira normalmente.
 MTP_MODELS: set[str] = {
     "unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL",
+    "unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL",
 }
 
 VISION_MODELS: dict[str, str] = {

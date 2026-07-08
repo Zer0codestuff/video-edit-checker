@@ -59,13 +59,10 @@ L'interfaccia web sara disponibile su **http://127.0.0.1:7860**. Al primo "Anali
 
 | Modello | Parametri | RAM minima | Note |
 |---------|-----------|------------|------|
-| `Qwen2.5-Omni-3B-GGUF` Q8 | 3B | ~6 GB | Default, consigliato per test |
-| `gemma-4-E2B-it-qat-GGUF` (Unsloth QAT) | ~2B | ~3 GB | QAT: qualita' originale a meta' memoria, con MTP speculative decoding |
-| `gemma-4-E2B-it-GGUF` | ~2B | ~8 GB | Leggero e veloce |
-| `Qwen2.5-Omni-3B-GGUF` Q4 | 3B | ~4 GB | Minimo consumo, meno affidabile |
-| `gemma-4-E4B-it-GGUF` | ~4B | ~16 GB | Buon compromesso |
-| `Qwen2.5-Omni-7B-GGUF` | 7B | ~16 GB | Piu accurato |
-| `Qwen3-Omni-30B-A3B-Instruct-GGUF` | 30B MoE | ~32 GB | Massima qualita |
+| `gemma-4-E2B-it-qat-GGUF` (Unsloth QAT) | ~2B | ~3 GB | Default, leggero + MTP speculative decoding |
+| `gemma-4-E4B-it-qat-GGUF` (Unsloth QAT) | ~4B | ~5 GB | Piu' accurato + MTP, per PC con >=16 GB RAM |
+| `gemma-4-E2B-it-GGUF` | ~2B | ~8 GB | Leggero e veloce (senza QAT) |
+| `gemma-4-E4B-it-GGUF` | ~4B | ~16 GB | Buon compromesso (senza QAT) |
 
 ### Pipeline ibrida (vision-only + whisper.cpp)
 
