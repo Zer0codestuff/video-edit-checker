@@ -258,10 +258,43 @@ def setup_llama(system: str, gpu: str) -> None:
     log(f"llama-server OK (build {ver}, backend {backend}, MTP: {'si' if mtp else 'no'}).")
 
 
-def setup_whisper(system: str, gpu: str) -> None:
-    if which_anywhere("whisper-cli"):
-        log("whisper-cli gia' presente, salto.")
+def _whisper_is_cuda(exe: Path) -> bool:
+    """Una build CUDA di whisper.cpp ha ggml-cuda.dll accanto al binario."""
+    return any(exe.parent.glob("ggml-cuda*.dll"))
+
+
+def _copy_cuda_dlls_to(dest_dir: Path) -> None:
+    """Copia le DLL runtime CUDA (cudart/cublas) da tools/llama accanto a whisper-cli.
+
+    Le build cublas di whisper.cpp non includono il runtime CUDA; lo
+    riusiamo dal pacchetto cudart gia' scaricato per llama.cpp.
+    """
+    llama_dir = TOOLS / "llama"
+    if not llama_dir.exists():
         return
+    copied = 0
+    for dll in llama_dir.rglob("*.dll"):
+        if re.match(r"(cudart|cublas)", dll.name, re.IGNORECASE):
+            shutil.copy2(dll, dest_dir / dll.name)
+            copied += 1
+    if copied:
+        log(f"Copiate {copied} DLL runtime CUDA accanto a whisper-cli.")
+    else:
+        log("ATTENZIONE: DLL runtime CUDA non trovate in tools/llama; "
+            "whisper-cli potrebbe non partire in modalita' GPU.")
+
+
+def setup_whisper(system: str, gpu: str) -> None:
+    want_cuda = system == "Windows" and gpu == "nvidia"
+    existing = which_anywhere("whisper-cli")
+    if existing:
+        if want_cuda and not _whisper_is_cuda(Path(existing)):
+            log("whisper-cli presente ma senza supporto CUDA: reinstallo la build GPU.")
+            if (TOOLS / "whisper").exists():
+                shutil.rmtree(TOOLS / "whisper")
+        else:
+            log("whisper-cli gia' presente, salto.")
+            return
     if system == "Darwin":
         if not try_brew("whisper-cpp"):
             log("ATTENZIONE: whisper-cli non installato; la pipeline ibrida non avra' l'analisi audio.")
@@ -269,7 +302,9 @@ def setup_whisper(system: str, gpu: str) -> None:
 
     assets = github_latest_assets("ggml-org/whisper.cpp")
     if system == "Windows":
-        patterns = [r"whisper-cublas.*bin-x64\.zip"] if gpu == "nvidia" else []
+        # cublas-12.x per primo, coerente con la build CUDA 12.4 di llama.cpp
+        patterns = ([r"whisper-cublas-12\..*bin-x64\.zip", r"whisper-cublas.*bin-x64\.zip"]
+                    if gpu == "nvidia" else [])
         patterns += [r"whisper-blas-bin-x64\.zip", r"whisper-bin-x64\.zip"]
     else:  # Linux
         patterns = [r"whisper-bin-ubuntu-x64\.tar\.gz"]
@@ -281,10 +316,19 @@ def setup_whisper(system: str, gpu: str) -> None:
     archive = TOOLS / asset["name"]
     download(asset["browser_download_url"], archive)
     extract(archive, TOOLS / "whisper")
-    if which_anywhere("whisper-cli"):
-        log("whisper-cli OK.")
-    else:
+
+    exe = _tools_binary("whisper-cli")
+    if exe is None:
         log("ATTENZIONE: whisper-cli non trovato dopo l'estrazione.")
+        return
+    if want_cuda:
+        if _whisper_is_cuda(exe):
+            _copy_cuda_dlls_to(exe.parent)
+            log("whisper-cli OK (build CUDA).")
+        else:
+            log("ATTENZIONE: scaricata una build whisper senza CUDA; l'audio verra' trascritto su CPU.")
+    else:
+        log("whisper-cli OK.")
 
 
 def main() -> None:
