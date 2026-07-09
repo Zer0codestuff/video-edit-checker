@@ -36,6 +36,7 @@ from core.report import (batch_summary_md, export_batch, export_csv,
 from core.video_analyzer import video_analyzer_for
 from core.vision_analyzer import vision_analyzer_for
 from core.speech_edits import detect_speech_edit_errors
+from core.speech_ensemble import detect_ensemble, transcribe_multi_temp
 from core.whisper_cpp import (DEFAULT_WHISPER_MODEL_LABEL, WHISPER_MODELS,
                               detect_transcript_errors, kill_orphan_whisper,
                               stop_tracked_whisper, transcribe_video)
@@ -113,6 +114,7 @@ def _pipeline_from_label(label: str) -> Pipeline:
 def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_label,
                  video_model_label, whisper_model_label, language_label,
                  min_confidence, n_parallel, batch_preset, ctx_per_slot,
+                 whisper_ensemble=False,
                  progress=gr.Progress()):
     logs: list[str] = []
     RESULTS.clear()
@@ -258,13 +260,39 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                      desc=f"{name}: trascrizione whisper...")
             yield partial()
             try:
-                segments = transcribe_video(
-                    video,
-                    vdir / "whisper",
-                    model_label=whisper_model_label or DEFAULT_WHISPER_MODEL_LABEL,
-                    language=lang.code,
-                    log=log,
-                )
+                wlabel = whisper_model_label or DEFAULT_WHISPER_MODEL_LABEL
+                # Ensemble multi-temp: utile su Medium/Large che a temp 0
+                # collassano gli stutter; 0.0+0.8 recupera i casi persi.
+                use_ensemble = bool(whisper_ensemble) and use_modular
+                if use_ensemble:
+                    log("Whisper ensemble: trascrivo a temp 0.0 e 0.8, poi unisco.")
+                    seg_lists = transcribe_multi_temp(
+                        video, vdir / "whisper",
+                        temperatures=(0.0, 0.8),
+                        model_label=wlabel,
+                        language=lang.code,
+                        log=log,
+                    )
+                    segments = next((s for s in seg_lists if s), [])
+                    raw_errors.extend(detect_ensemble(
+                        seg_lists, probe_duration(video), language=lang))
+                else:
+                    segments = transcribe_video(
+                        video,
+                        vdir / "whisper",
+                        model_label=wlabel,
+                        language=lang.code,
+                        log=log,
+                    )
+                    if segments:
+                        # Word-level (filler, parola/n-gram ripetuti) + baseline
+                        # a segmenti (trigger "aspetta/lo ripeto", frasi duplicate).
+                        raw_errors.extend(detect_speech_edit_errors(
+                            segments,
+                            probe_duration(video),
+                            language=lang,
+                            baseline_fn=detect_transcript_errors,
+                        ))
             except Exception as err:
                 log(f"Trascrizione whisper fallita ({err}); salto analisi audio.")
                 stop_tracked_whisper(log=log)
@@ -274,15 +302,6 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                 stop_tracked_whisper(log=log)
                 aborted = True
                 break
-            if segments:
-                # Word-level (filler, parola/n-gram ripetuti) + baseline
-                # a segmenti (trigger "aspetta/lo ripeto", frasi duplicate).
-                raw_errors.extend(detect_speech_edit_errors(
-                    segments,
-                    probe_duration(video),
-                    language=lang,
-                    baseline_fn=detect_transcript_errors,
-                ))
             yield partial()
             if use_speech:
                 # Niente finestre VLM: passa direttamente a merge/filtro.
@@ -417,12 +436,13 @@ def _toggle_pipeline(pipeline_label):
         if pipeline is Pipeline.SPEECH
         else DEFAULT_WHISPER_MODEL_LABEL
     )
+    whisper_vis = pipeline in {
+        Pipeline.HYBRID, Pipeline.VIDEO, Pipeline.SPEECH}
     return (gr.update(visible=pipeline is Pipeline.OMNI),
             gr.update(visible=pipeline is Pipeline.HYBRID),
             gr.update(visible=pipeline is Pipeline.VIDEO),
-            gr.update(visible=pipeline in {
-                Pipeline.HYBRID, Pipeline.VIDEO, Pipeline.SPEECH},
-                value=whisper_default))
+            gr.update(visible=whisper_vis, value=whisper_default),
+            gr.update(visible=whisper_vis))
 
 
 def build_ui() -> gr.Blocks:
@@ -465,6 +485,13 @@ def build_ui() -> gr.Blocks:
                     info="Per stutter/filler preferisci Small (temp 0.8). "
                          "Large spesso 'corregge' le ripetizioni. "
                          "Scaricato in ~/.cache/whisper.cpp/ al primo uso.",
+                    visible=True,
+                )
+                whisper_ensemble_in = gr.Checkbox(
+                    label="Ensemble whisper (temp 0.0 + 0.8)",
+                    value=False,
+                    info="2× più lento. Utile con Medium/Large: recupera stutter "
+                         "che una sola temperatura collassa. Su Small di solito non serve.",
                     visible=True,
                 )
                 language_in = gr.Radio(
@@ -526,7 +553,7 @@ def build_ui() -> gr.Blocks:
 
         pipeline_in.change(_toggle_pipeline, [pipeline_in],
                            [model_in, vision_model_in, video_model_in,
-                            whisper_model_in])
+                            whisper_model_in, whisper_ensemble_in])
 
         outputs = [logs_out, video_sel, player, table, gallery, json_out, csv_out,
                    summary_out, batch_json_out, batch_csv_out]
@@ -536,7 +563,7 @@ def build_ui() -> gr.Blocks:
             run_analysis,
             [files_in, urls_in, pipeline_in, model_in, vision_model_in,
              video_model_in, whisper_model_in, language_in, conf_in,
-             parallel_in, batch_in, ctx_in],
+             parallel_in, batch_in, ctx_in, whisper_ensemble_in],
             outputs,
             show_progress="minimal",
         )

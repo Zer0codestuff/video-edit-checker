@@ -50,12 +50,22 @@ scende a F1 ~0.57. **Small** con temp 0.8 è il migliore per questo task.
 | Medium Q8 | 0.8 | ~0.67–0.75 |
 | Large v3 Turbo Q5 | 0.8 | ~0.57 |
 
-## Pipeline «Solo parlato»
+## Ensemble multi-temperatura
 
-Nuova opzione UI: whisper + euristiche pixel, **senza** VLM. Ideale quando gli
-errori sono quasi tutti di parlato (come il video 3.5). Molto più veloce.
+Su **Medium**, una sola passata a temp 0.8 perde «anche anche» (F1 0.89).
+Due passate (0.0 + 0.8) unite → **F1 1.0** (2× tempo whisper).
 
-Temperatura: su **medium**, `0.0` collassa «potrebbe potrebbe»; `0.8` lo preserva (e spesso anche `ehm`). Default app: `0.8` (override `WHISPER_TEMPERATURE`).
+Checkbox UI: «Ensemble whisper (temp 0.0 + 0.8)». Consigliato solo se usi
+Medium/Large; con Small di solito non serve.
+
+## Configurazione consigliata (video tipo 3.5)
+
+1. Pipeline **Solo parlato**
+2. Whisper **Small Q8**
+3. Ensemble **off**
+4. Lingua Italiano
+
+Se Small non basta e passi a Medium: attiva ensemble.
 
 ## LLM-on-transcript (Gemma E2B QAT) — peggiore delle euristiche
 
