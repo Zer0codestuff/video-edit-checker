@@ -10,6 +10,8 @@ Tool locale che analizza video per trovare **errori di montaggio** usando modell
 | Frame congelato | Immagine bloccata mentre l'audio prosegue |
 | Taglio mancante | Chi parla sbaglia, dice "lo ripeto" / "aspetta" / "rifacciamo", o ci sono esitazioni/momenti morti evidenti |
 | Frase ripetuta | Stessa frase o parte di frase pronunciata due volte quasi identica |
+| Parola/stutter | Parola o n-gram ripetuto subito dopo (es. «fornisce fornisce», «a un soggetto a un soggetto») — rilevato dai word-token di whisper |
+| Filler | Esitazioni evidenti da tagliare («ehh», «ehm», «uhm») |
 | Problema audio | Audio che salta, si interrompe, silenzio anomalo, rumori di registrazione |
 | Altro | Altri evidenti errori di montaggio o registrazione |
 
