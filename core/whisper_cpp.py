@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
 import shutil
 import subprocess
+import threading
 import urllib.request
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -16,8 +18,23 @@ from core.language import LanguagePack, resolve_language
 from core.models import EditError
 
 CACHE_DIR = Path.home() / ".cache" / "whisper.cpp"
-DEFAULT_MODEL_NAME = "ggml-large-v3-turbo-q5_0.bin"
-DEFAULT_MODEL_URL = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{DEFAULT_MODEL_NAME}"
+_HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+
+# Catalogo UI: etichetta -> nome file ggml su Hugging Face.
+WHISPER_MODELS: dict[str, str] = {
+    "Medium Q8 (default, ~785 MB)": "ggml-medium-q8_0.bin",
+    "Medium Q5 (~514 MB)": "ggml-medium-q5_0.bin",
+    "Small Q8 (~250 MB, piu veloce)": "ggml-small-q8_0.bin",
+    "Base Q8 (~80 MB, leggero)": "ggml-base-q8_0.bin",
+    "Large v3 Turbo Q5 (~550 MB)": "ggml-large-v3-turbo-q5_0.bin",
+    "Large v3 Turbo Q8 (~850 MB)": "ggml-large-v3-turbo-q8_0.bin",
+}
+DEFAULT_WHISPER_MODEL_LABEL = "Medium Q8 (default, ~785 MB)"
+DEFAULT_MODEL_NAME = WHISPER_MODELS[DEFAULT_WHISPER_MODEL_LABEL]
+
+# Processi whisper avviati da questa app (per cleanup su cancel/nuova run).
+_active_lock = threading.Lock()
+_active_procs: set[subprocess.Popen] = set()
 
 
 @dataclass
@@ -27,25 +44,18 @@ class TranscriptSegment:
     text: str
 
 
-def find_default_model() -> Path | None:
+def _model_url(filename: str) -> str:
+    return f"{_HF_BASE}/{filename}"
+
+
+def _search_model_file(filename: str) -> Path | None:
+    """Cerca un file ggml in cache, env e path tipici di sistema."""
     env = os.environ.get("WHISPER_CPP_MODEL", "").strip()
     candidates = [
-        Path(env) if env else None,
-        Path.home() / ".cache" / "whisper.cpp" / "ggml-large-v3-turbo-q5_0.bin",
-        Path.home() / ".cache" / "whisper.cpp" / "ggml-large-v3-turbo-q8_0.bin",
-        Path.home() / ".cache" / "whisper.cpp" / "ggml-large-v3-turbo.bin",
-        Path.home() / ".cache" / "whisper.cpp" / "ggml-base.bin",
-        Path.home() / ".cache" / "whisper.cpp" / "ggml-small.bin",
-        Path("/opt/homebrew/share/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin"),
-        Path("/opt/homebrew/share/whisper.cpp/models/ggml-large-v3-turbo-q8_0.bin"),
-        Path("/opt/homebrew/share/whisper.cpp/models/ggml-large-v3-turbo.bin"),
-        Path("/opt/homebrew/share/whisper.cpp/models/ggml-base.bin"),
-        Path("/opt/homebrew/share/whisper.cpp/models/ggml-small.bin"),
-        Path("/usr/local/share/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin"),
-        Path("/usr/local/share/whisper.cpp/models/ggml-large-v3-turbo-q8_0.bin"),
-        Path("/usr/local/share/whisper.cpp/models/ggml-large-v3-turbo.bin"),
-        Path("/usr/local/share/whisper.cpp/models/ggml-base.bin"),
-        Path("/usr/local/share/whisper.cpp/models/ggml-small.bin"),
+        Path(env) if env and Path(env).name == filename else None,
+        CACHE_DIR / filename,
+        Path("/opt/homebrew/share/whisper.cpp/models") / filename,
+        Path("/usr/local/share/whisper.cpp/models") / filename,
     ]
     for path in candidates:
         if path and path.exists():
@@ -53,19 +63,132 @@ def find_default_model() -> Path | None:
     return None
 
 
-def ensure_default_model(log=print) -> Path | None:
-    found = find_default_model()
+def find_default_model() -> Path | None:
+    """Path del modello default (medium Q8) se gia' presente, altrimenti None."""
+    env = os.environ.get("WHISPER_CPP_MODEL", "").strip()
+    if env and Path(env).exists():
+        return Path(env)
+    return _search_model_file(DEFAULT_MODEL_NAME)
+
+
+def resolve_whisper_model(
+    model_label: str = "",
+    model_path: str = "",
+    log=print,
+) -> Path | None:
+    """Risolve il path del modello: path esplicito, oppure label del catalogo.
+
+    Se manca in cache, lo scarica da Hugging Face.
+    """
+    if (model_path or "").strip():
+        path = Path(model_path).expanduser()
+        if path.exists():
+            return path
+        log(f"Path whisper non trovato: {path}")
+        return None
+
+    label = (model_label or "").strip() or DEFAULT_WHISPER_MODEL_LABEL
+    filename = WHISPER_MODELS.get(label, DEFAULT_MODEL_NAME)
+    found = _search_model_file(filename)
     if found is not None:
         return found
+
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    target = CACHE_DIR / DEFAULT_MODEL_NAME
-    log(f"Scarico modello whisper.cpp {DEFAULT_MODEL_NAME} in {target}...")
+    target = CACHE_DIR / filename
+    log(f"Scarico modello whisper.cpp {filename} in {target}...")
     try:
-        urllib.request.urlretrieve(DEFAULT_MODEL_URL, target)
+        urllib.request.urlretrieve(_model_url(filename), target)
     except Exception as err:
         log(f"Download modello whisper.cpp fallito: {err}")
         return None
     return target if target.exists() else None
+
+
+def ensure_default_model(log=print) -> Path | None:
+    """Compat: scarica/restituisce il modello default (medium Q8)."""
+    return resolve_whisper_model(DEFAULT_WHISPER_MODEL_LABEL, log=log)
+
+
+def _register(proc: subprocess.Popen) -> None:
+    with _active_lock:
+        _active_procs.add(proc)
+
+
+def _unregister(proc: subprocess.Popen) -> None:
+    with _active_lock:
+        _active_procs.discard(proc)
+
+
+def _terminate_proc(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def stop_tracked_whisper(log=print) -> int:
+    """Termina i whisper-cli avviati da questa istanza dell'app."""
+    with _active_lock:
+        procs = list(_active_procs)
+        _active_procs.clear()
+    n = 0
+    for proc in procs:
+        if proc.poll() is None:
+            _terminate_proc(proc)
+            n += 1
+    if n:
+        log(f"Terminati {n} processi whisper-cli ancora in esecuzione.")
+    return n
+
+
+def kill_orphan_whisper(log=print) -> int:
+    """Uccide eventuali whisper-cli.exe orfani sul sistema (Windows/Linux/macOS).
+
+    Usato a inizio analisi e in cleanup: evita che run interrotte continuino
+    a consumare CPU/GPU in background.
+    """
+    killed = 0
+    try:
+        if os.name == "nt":
+            # /IM matcha il nome immagine; /F forza. Fallisce silenziosamente
+            # se non ci sono processi (exit code 128).
+            res = subprocess.run(
+                ["taskkill", "/IM", "whisper-cli.exe", "/F"],
+                capture_output=True, text=True, timeout=15,
+            )
+            # Conta le righe "SUCCESS" tipiche di taskkill.
+            out = (res.stdout or "") + (res.stderr or "")
+            killed = out.lower().count("success")
+            if killed == 0 and res.returncode == 0 and "whisper-cli" in out.lower():
+                killed = 1
+        else:
+            res = subprocess.run(
+                ["pkill", "-x", "whisper-cli"],
+                capture_output=True, text=True, timeout=10,
+            )
+            # pkill: 0 = almeno uno, 1 = nessuno
+            if res.returncode == 0:
+                killed = 1
+    except Exception:
+        pass
+    # Anche i Popen tracciati (stesso processo o gia' morti).
+    stop_tracked_whisper(log=lambda *_: None)
+    if killed:
+        log(f"Chiusi processi whisper-cli orfani ({killed}).")
+    return killed
+
+
+atexit.register(lambda: stop_tracked_whisper(log=lambda *_: None))
 
 
 def _to_seconds(value) -> float:
@@ -98,10 +221,49 @@ def _parse_json(path: Path) -> list[TranscriptSegment]:
     return segments
 
 
+def detect_whisper_backend(whisper_bin: str | Path) -> str:
+    """Rileva il backend della build whisper-cli: cuda, vulkan, metal o cpu.
+
+    Su Windows le release ufficiali CUDA espongono ggml-cuda*.dll accanto
+    all'eseguibile; senza quella DLL la trascrizione resta su CPU/BLAS.
+    """
+    binary = Path(whisper_bin)
+    parent = binary.parent
+    # Layout tipici: DLL accanto all'exe, in lib/, oppure in ../lib
+    # quando l'exe e' in bin/ o Release/. Non salire oltre: da una cartella
+    # temp piatta parent.parent/lib puo' puntare a path non correlati.
+    search_dirs = [parent, parent / "lib"]
+    if parent.name.lower() in {"bin", "release", "debug", "x64", "win-x64"}:
+        search_dirs.append(parent.parent / "lib")
+    checks = (
+        ("cuda", ("ggml-cuda*", "libggml-cuda*")),
+        ("vulkan", ("ggml-vulkan*", "libggml-vulkan*")),
+        ("metal", ("ggml-metal*", "libggml-metal*")),
+    )
+    for d in search_dirs:
+        if not d.is_dir():
+            continue
+        for backend, patterns in checks:
+            # Consuma i match: un generator Path.glob e' sempre truthy.
+            if any(f for pat in patterns for f in d.glob(pat)):
+                return backend
+    return "cpu"
+
+
+def _backend_label(backend: str) -> str:
+    return {
+        "cuda": "CUDA (NVIDIA GPU)",
+        "vulkan": "Vulkan GPU",
+        "metal": "Metal GPU",
+        "cpu": "CPU/BLAS",
+    }.get(backend, backend)
+
+
 def transcribe_video(
     video: Path,
     workdir: Path,
     model_path: str = "",
+    model_label: str = "",
     language: str = "it",
     log=print,
 ) -> list[TranscriptSegment]:
@@ -110,11 +272,11 @@ def transcribe_video(
         log("whisper-cli non trovato: installa whisper.cpp oppure usa la pipeline omni.")
         return []
 
-    model = Path(model_path).expanduser() if model_path.strip() else ensure_default_model(log=log)
+    model = resolve_whisper_model(model_label=model_label, model_path=model_path, log=log)
     if model is None or not model.exists():
         log(
-            "Modello whisper.cpp non trovato. Inserisci il path nella UI oppure imposta "
-            "WHISPER_CPP_MODEL=/path/to/ggml-large-v3-turbo-q5_0.bin"
+            "Modello whisper.cpp non trovato. Scegline uno dal menu oppure imposta "
+            "WHISPER_CPP_MODEL=/path/to/ggml-medium-q8_0.bin"
         )
         return []
 
@@ -133,6 +295,7 @@ def transcribe_video(
         log("Impossibile estrarre l'audio per whisper.cpp.")
         return []
 
+    backend = detect_whisper_backend(whisper_bin)
     cmd = [
         whisper_bin,
         "-m", str(model),
@@ -143,10 +306,32 @@ def transcribe_video(
         "-of", str(out_base),
         "-np",
     ]
-    log(f"Trascrivo audio con whisper.cpp ({model.name})...")
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-    if res.returncode != 0:
-        msg = res.stderr.strip().splitlines()[-1] if res.stderr.strip() else "errore sconosciuto"
+    # Non passare mai -ng/--no-gpu: su build CUDA deve usare la GPU.
+    log(f"Trascrivo audio con whisper.cpp ({model.name}, "
+        f"backend {_backend_label(backend)})...")
+    # Popen (non run): cosi' possiamo terminare il processo su cancel/timeout
+    # o a inizio di una nuova analisi, senza lasciare orfani.
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(Path(whisper_bin).parent),
+    )
+    _register(proc)
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=3600)
+        except subprocess.TimeoutExpired:
+            log("Timeout whisper.cpp (3600s); termino il processo.")
+            _terminate_proc(proc)
+            return []
+    finally:
+        _unregister(proc)
+
+    if proc.returncode != 0:
+        err_text = (stderr or "").strip()
+        msg = err_text.splitlines()[-1] if err_text else "errore sconosciuto"
         log(f"Errore whisper.cpp: {msg}")
         return []
 

@@ -33,7 +33,9 @@ L'installer rileva sistema operativo e GPU e scarica da solo tutto il resto nell
 |------------|---------|-------|-------|
 | ffmpeg | build ufficiale gyan.dev | build statica | Homebrew |
 | llama.cpp | **CUDA** se c'e' una GPU NVIDIA, altrimenti **Vulkan** (AMD/Intel) | Vulkan/CPU | Homebrew (Metal) |
-| whisper.cpp | build CUDA o BLAS | build ufficiale | Homebrew |
+| whisper.cpp | **CUDA (cublas)** se c'e' una GPU NVIDIA, altrimenti BLAS/CPU | build ufficiale | Homebrew |
+
+Su PC con GPU NVIDIA l'installer scarica la release ufficiale `whisper-cublas-12.x` e copia accanto a `whisper-cli` le DLL runtime CUDA (`cudart`/`cublas`) dal pacchetto llama.cpp. In log vedrai `backend CUDA (NVIDIA GPU)`. Su AMD/Intel resta la build CPU/BLAS (le release ufficiali whisper.cpp non includono ancora Vulkan).
 
 Rilanciare `install.py` e' sempre sicuro: salta quello che e' gia' presente.
 
@@ -75,7 +77,7 @@ L'interfaccia web sara disponibile su **http://127.0.0.1:7860**. Al primo "Anali
 | `Qwen2.5-VL-3B-Instruct` | 3B | Piu accurato |
 | `bartowski/OpenGVLab_InternVL3_5-4B-GGUF` Q4_K_M | 4B | Accurato, ~3 GB |
 
-L'audio della pipeline ibrida usa whisper.cpp con `ggml-large-v3-turbo-q5_0` (scaricato automaticamente al primo uso).
+L'audio delle pipeline ibrida/video usa whisper.cpp. Default: `ggml-medium-q8_0` (~785 MB, scaricato automaticamente al primo uso). Dal menu puoi scegliere anche Small/Base (piu leggeri) o Large v3 Turbo.
 
 ### Pipeline video nativa (input_video + whisper.cpp)
 

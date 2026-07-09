@@ -16,6 +16,7 @@ salta cio' che e' gia' installato.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
 import shutil
@@ -179,17 +180,68 @@ def pick_asset(assets: list[dict], patterns: list[str]) -> dict | None:
     return None
 
 
+def _nvidia_smi_candidates() -> list[str]:
+    """Path tipici di nvidia-smi (anche se non e' nel PATH)."""
+    found: list[str] = []
+    which = shutil.which("nvidia-smi")
+    if which:
+        found.append(which)
+    if platform.system() == "Windows":
+        for candidate in (
+            Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "nvidia-smi.exe",
+            Path(r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"),
+        ):
+            if candidate.is_file():
+                found.append(str(candidate))
+    # Dedup preservando l'ordine.
+    seen: set[str] = set()
+    out: list[str] = []
+    for path in found:
+        key = path.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(path)
+    return out
+
+
+def _nvidia_smi_lists_gpu() -> bool:
+    for smi in _nvidia_smi_candidates():
+        try:
+            res = subprocess.run(
+                [smi, "-L"], capture_output=True, text=True, timeout=10,
+            )
+            if res.returncode == 0 and "GPU" in (res.stdout or ""):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _windows_wmi_has_nvidia() -> bool:
+    """Fallback se nvidia-smi non e' raggiungibile ma il driver NVIDIA e' installato."""
+    if platform.system() != "Windows":
+        return False
+    try:
+        res = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-Command",
+                "(Get-CimInstance Win32_VideoController).Name -join '`n'",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        if res.returncode == 0 and "nvidia" in (res.stdout or "").lower():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def detect_gpu() -> str:
     """Ritorna 'nvidia', 'apple' o 'generic' (AMD/Intel -> Vulkan)."""
     if platform.system() == "Darwin":
         return "apple"
-    if shutil.which("nvidia-smi"):
-        try:
-            res = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=10)
-            if res.returncode == 0 and "GPU" in res.stdout:
-                return "nvidia"
-        except Exception:
-            pass
+    if _nvidia_smi_lists_gpu() or _windows_wmi_has_nvidia():
+        return "nvidia"
     return "generic"
 
 
@@ -290,12 +342,51 @@ def setup_llama(system: str, gpu: str) -> None:
     log(f"llama-server OK (build {ver}, backend {backend}, MTP: {'si' if mtp else 'no'}).")
 
 
+def _whisper_backend(exe: Path) -> str:
+    """Rileva il backend GPU della build whisper-cli (cuda / vulkan / cpu)."""
+    # Stessa logica di core.whisper_cpp.detect_whisper_backend, senza
+    # import circolari (install.py e' usato anche fuori dal package).
+    parent = exe.parent
+    search_dirs = [parent, parent / "lib"]
+    if parent.name.lower() in {"bin", "release", "debug", "x64", "win-x64"}:
+        search_dirs.append(parent.parent / "lib")
+    for d in search_dirs:
+        if not d.is_dir():
+            continue
+        if any(d.glob("ggml-cuda*")) or any(d.glob("libggml-cuda*")):
+            return "cuda"
+        if any(d.glob("ggml-vulkan*")) or any(d.glob("libggml-vulkan*")):
+            return "vulkan"
+    return "cpu"
+
+
 def _whisper_is_cuda(exe: Path) -> bool:
     """Una build CUDA di whisper.cpp ha ggml-cuda.dll accanto al binario."""
-    return any(exe.parent.glob("ggml-cuda*.dll"))
+    return _whisper_backend(exe) == "cuda"
 
 
-def _copy_cuda_dlls_to(dest_dir: Path) -> None:
+def _ensure_llama_cudart(assets: list[dict] | None = None) -> None:
+    """Assicura che tools/llama contenga le DLL runtime CUDA (cudart/cublas).
+
+    Serve a whisper-cli: le release cublas ufficiali non le includono.
+    """
+    llama_dir = TOOLS / "llama"
+    if llama_dir.exists():
+        if any(llama_dir.rglob("cudart*.dll")):
+            return
+    if assets is None:
+        assets = github_latest_assets("ggml-org/llama.cpp")
+    cudart = pick_asset(assets, [r"^cudart-.*x64\.zip"])
+    if cudart is None:
+        log("ATTENZIONE: asset cudart non trovato nelle release llama.cpp.")
+        return
+    llama_dir.mkdir(parents=True, exist_ok=True)
+    archive = TOOLS / cudart["name"]
+    download(cudart["browser_download_url"], archive)
+    extract(archive, llama_dir)
+
+
+def _copy_cuda_dlls_to(dest_dir: Path) -> int:
     """Copia le DLL runtime CUDA (cudart/cublas) da tools/llama accanto a whisper-cli.
 
     Le build cublas di whisper.cpp non includono il runtime CUDA; lo
@@ -303,29 +394,54 @@ def _copy_cuda_dlls_to(dest_dir: Path) -> None:
     """
     llama_dir = TOOLS / "llama"
     if not llama_dir.exists():
-        return
+        return 0
     copied = 0
     for dll in llama_dir.rglob("*.dll"):
         if re.match(r"(cudart|cublas)", dll.name, re.IGNORECASE):
-            shutil.copy2(dll, dest_dir / dll.name)
+            target = dest_dir / dll.name
+            if target.exists() and target.stat().st_size == dll.stat().st_size:
+                continue
+            shutil.copy2(dll, target)
             copied += 1
     if copied:
         log(f"Copiate {copied} DLL runtime CUDA accanto a whisper-cli.")
     else:
-        log("ATTENZIONE: DLL runtime CUDA non trovate in tools/llama; "
-            "whisper-cli potrebbe non partire in modalita' GPU.")
+        # Gia' presenti oppure assenti in tools/llama.
+        if any(dest_dir.glob("cudart*.dll")):
+            log("DLL runtime CUDA gia' presenti accanto a whisper-cli.")
+        else:
+            log("ATTENZIONE: DLL runtime CUDA non trovate in tools/llama; "
+                "whisper-cli potrebbe non partire in modalita' GPU.")
+    return copied
 
 
 def setup_whisper(system: str, gpu: str) -> None:
     want_cuda = system == "Windows" and gpu == "nvidia"
     existing = which_anywhere("whisper-cli")
     if existing:
-        if want_cuda and not _whisper_is_cuda(Path(existing)):
-            log("whisper-cli presente ma senza supporto CUDA: reinstallo la build GPU.")
-            if (TOOLS / "whisper").exists():
-                shutil.rmtree(TOOLS / "whisper")
+        existing_path = Path(existing)
+        backend = _whisper_backend(existing_path)
+        in_tools = False
+        try:
+            existing_path.resolve().relative_to((TOOLS / "whisper").resolve())
+            in_tools = True
+        except (ValueError, OSError):
+            in_tools = False
+        if want_cuda and backend != "cuda":
+            if in_tools:
+                log("whisper-cli in tools/ senza CUDA: reinstallo la build GPU NVIDIA.")
+                shutil.rmtree(TOOLS / "whisper", ignore_errors=True)
+            else:
+                log("whisper-cli di sistema senza CUDA: scarico la build GPU in tools/.")
+        elif want_cuda and backend == "cuda":
+            # Build CUDA ok: assicurati solo che le DLL runtime siano presenti.
+            if in_tools:
+                _ensure_llama_cudart()
+                _copy_cuda_dlls_to(existing_path.parent)
+            log(f"whisper-cli gia' presente (backend {backend}), salto.")
+            return
         else:
-            log("whisper-cli gia' presente, salto.")
+            log(f"whisper-cli gia' presente (backend {backend}), salto.")
             return
     if system == "Darwin":
         if not try_brew("whisper-cpp"):
@@ -335,8 +451,10 @@ def setup_whisper(system: str, gpu: str) -> None:
     assets = github_latest_assets("ggml-org/whisper.cpp")
     if system == "Windows":
         # cublas-12.x per primo, coerente con la build CUDA 12.4 di llama.cpp
-        patterns = ([r"whisper-cublas-12\..*bin-x64\.zip", r"whisper-cublas.*bin-x64\.zip"]
-                    if gpu == "nvidia" else [])
+        patterns = ([r"whisper-cublas-12\..*bin-x64\.zip",
+                     r"whisper-cublas-12.*bin-x64\.zip",
+                     r"whisper-cublas.*bin-x64\.zip"]
+                    if want_cuda else [])
         patterns += [r"whisper-blas-bin-x64\.zip", r"whisper-bin-x64\.zip"]
     else:  # Linux
         patterns = [r"whisper-bin-ubuntu-x64\.tar\.gz"]
@@ -345,6 +463,18 @@ def setup_whisper(system: str, gpu: str) -> None:
     if asset is None:
         log("ATTENZIONE: nessun binario whisper.cpp adatto; la pipeline ibrida non avra' l'analisi audio.")
         return
+    if want_cuda and "cublas" not in asset["name"].lower():
+        log("ATTENZIONE: nessuna build whisper-cublas nelle release; "
+            f"uso {asset['name']} (CPU). Su PC NVIDIA rilancia install.py piu' tardi.")
+    else:
+        log(f"Scarico whisper.cpp: {asset['name']}")
+
+    # Su NVIDIA prepara prima il runtime CUDA (serve dopo l'estrazione).
+    if want_cuda:
+        _ensure_llama_cudart()
+
+    if (TOOLS / "whisper").exists():
+        shutil.rmtree(TOOLS / "whisper", ignore_errors=True)
     archive = TOOLS / asset["name"]
     download(asset["browser_download_url"], archive)
     extract(archive, TOOLS / "whisper")
@@ -353,14 +483,16 @@ def setup_whisper(system: str, gpu: str) -> None:
     if exe is None:
         log("ATTENZIONE: whisper-cli non trovato dopo l'estrazione.")
         return
+    backend = _whisper_backend(exe)
     if want_cuda:
-        if _whisper_is_cuda(exe):
+        if backend == "cuda":
             _copy_cuda_dlls_to(exe.parent)
-            log("whisper-cli OK (build CUDA).")
+            log("whisper-cli OK (build CUDA / NVIDIA).")
         else:
-            log("ATTENZIONE: scaricata una build whisper senza CUDA; l'audio verra' trascritto su CPU.")
+            log("ATTENZIONE: scaricata una build whisper senza CUDA; "
+                "l'audio verra' trascritto su CPU.")
     else:
-        log("whisper-cli OK.")
+        log(f"whisper-cli OK (backend {backend}).")
 
 
 def main() -> None:

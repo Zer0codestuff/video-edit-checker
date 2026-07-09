@@ -9,6 +9,7 @@ Avvio:  python app.py
 from __future__ import annotations
 
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
@@ -34,8 +35,9 @@ from core.report import (batch_summary_md, export_batch, export_csv,
                          fmt_time, merge_errors)
 from core.video_analyzer import video_analyzer_for
 from core.vision_analyzer import vision_analyzer_for
-from core.whisper_cpp import (detect_transcript_errors, find_default_model,
-                              transcribe_video)
+from core.whisper_cpp import (DEFAULT_WHISPER_MODEL_LABEL, WHISPER_MODELS,
+                              detect_transcript_errors, kill_orphan_whisper,
+                              stop_tracked_whisper, transcribe_video)
 from core.windows import make_windows, probe_duration
 
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
@@ -72,6 +74,17 @@ class VideoResult:
 # Chiave = id univoco della run corrente (es. "00_short_25s"), non solo lo stem.
 RESULTS: dict[str, VideoResult] = {}
 
+# Flag condiviso: il pulsante Annulla lo setta; run_analysis lo controlla
+# tra un video/finestra e l'altro e ferma whisper/LLM in coda.
+_cancel_event = threading.Event()
+
+
+def request_cancel():
+    """Segnala l'annullamento della run in corso e ferma whisper subito."""
+    _cancel_event.set()
+    stop_tracked_whisper(log=print)
+    kill_orphan_whisper(log=print)
+
 
 def _result_key(index: int, stem: str) -> str:
     safe = re.sub(r'[<>:"/\\|?*]', "_", stem)[:40].strip(" .") or "video"
@@ -93,11 +106,12 @@ def _pipeline_from_label(label: str) -> Pipeline:
 
 
 def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_label,
-                 video_model_label, whisper_model_path, language_label,
+                 video_model_label, whisper_model_label, language_label,
                  min_confidence, n_parallel, batch_preset, ctx_per_slot,
                  progress=gr.Progress()):
     logs: list[str] = []
     RESULTS.clear()
+    _cancel_event.clear()
     lang = resolve_language(language_label)
 
     def log(msg: str):
@@ -109,6 +123,12 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
     def partial():
         """Yield intermedio: aggiorna solo i log."""
         return (logs_text(),) + (gr.update(),) * 9
+
+    def cancelled() -> bool:
+        return _cancel_event.is_set()
+
+    # Evita whisper-cli orfani da run interrotte / Analizza rilanciato.
+    kill_orphan_whisper(log=log)
 
     run_dir = RUNS_DIR / time.strftime("run_%Y-%m-%d_%H-%M-%S")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -153,7 +173,12 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
     # 3. Analizza in sequenza
     run_results: dict[str, list[EditError]] = {}
     total = len(videos)
+    aborted = False
     for v_i, video in enumerate(videos):
+        if cancelled():
+            log("Analisi annullata dall'utente.")
+            aborted = True
+            break
         name = video.stem
         key = _result_key(v_i, name)
         log(f"--- Analizzo '{name}' ({v_i + 1}/{total}) ---")
@@ -171,6 +196,10 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
         except Exception as err:
             log(f"ERRORE ffmpeg su '{name}': {err}")
             continue
+        if cancelled():
+            log("Analisi annullata dall'utente.")
+            aborted = True
+            break
         log(f"{len(wins)} finestre da analizzare.")
 
         raw_errors: list[EditError] = []
@@ -196,17 +225,28 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                     log("Pipeline ibrida: euristiche visive + whisper.cpp + modello vision-only.")
                 raw_errors.extend(detect_visual_heuristics(
                     wins, log=log, language=lang))
+                if cancelled():
+                    log("Analisi annullata dall'utente.")
+                    aborted = True
+                    break
                 transcript_future = bg_pool.submit(
                     transcribe_video,
                     video,
                     vdir / "whisper",
-                    model_path=whisper_model_path or "",
+                    model_label=whisper_model_label or DEFAULT_WHISPER_MODEL_LABEL,
                     language=lang.code,
                     log=log,
                 )
 
             futures = [llm_pool.submit(analyze, win, log=log) for win in wins]
             for w_i, fut in enumerate(futures):
+                if cancelled():
+                    log("Analisi annullata dall'utente: fermo le finestre in coda.")
+                    for pending in futures[w_i:]:
+                        pending.cancel()
+                    stop_tracked_whisper(log=log)
+                    aborted = True
+                    break
                 frac = (v_i + (w_i / max(1, len(wins)))) / total
                 progress(0.05 + 0.9 * frac,
                          desc=f"{name}: finestra {w_i + 1}/{len(wins)}")
@@ -231,23 +271,41 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                 if w_i % 3 == 0:
                     yield partial()
 
+            if aborted:
+                break
+
             if transcript_future is not None:
+                if cancelled():
+                    log("Analisi annullata: interrompo la trascrizione whisper.")
+                    transcript_future.cancel()
+                    stop_tracked_whisper(log=log)
+                    aborted = True
+                    break
                 try:
                     segments = transcript_future.result(
                         timeout=WINDOW_FUTURE_TIMEOUT_SECONDS)
                 except FuturesTimeout:
-                    log("Trascrizione whisper: timeout; salto analisi audio.")
+                    log("Trascrizione whisper: timeout; termino whisper-cli.")
                     transcript_future.cancel()
+                    stop_tracked_whisper(log=log)
                     segments = []
                 except Exception as err:
                     log(f"Trascrizione whisper fallita ({err}); salto analisi audio.")
+                    stop_tracked_whisper(log=log)
                     segments = []
-                if segments:
+                if segments and not cancelled():
                     raw_errors.extend(detect_transcript_errors(
                         segments, probe_duration(video), language=lang))
         finally:
+            # Chiudi eventuali whisper ancora vivi prima dello shutdown pool
+            # (cancel_futures da solo non uccide il subprocess figlio).
+            stop_tracked_whisper(log=log)
             llm_pool.shutdown(wait=False, cancel_futures=True)
             bg_pool.shutdown(wait=False, cancel_futures=True)
+
+        if aborted or cancelled():
+            aborted = True
+            break
 
         raw_errors = verify_visual_errors(raw_errors, wins, log=log)
         errors = filter_errors(merge_errors(raw_errors), float(min_confidence))
@@ -274,7 +332,12 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                batch_summary_md(run_results), gr.update(), gr.update())
 
     # 4. Riepilogo finale della run (playlist)
-    log("Analisi completata.")
+    if aborted or cancelled():
+        log("Run interrotta.")
+        stop_tracked_whisper(log=log)
+        kill_orphan_whisper(log=log)
+    else:
+        log("Analisi completata.")
     summary = batch_summary_md(run_results)
     batch_json = batch_csv = None
     if run_results:
@@ -324,7 +387,6 @@ def build_ui() -> gr.Blocks:
             "Trova errori di montaggio (schermo nero, tagli mancati, frasi ripetute...) "
             "con modelli locali: omni VLM oppure vision-only + whisper.cpp."
         )
-        default_whisper = find_default_model()
         with gr.Row():
             with gr.Column(scale=1):
                 gr.Markdown("### 📥 Sorgenti")
@@ -348,11 +410,12 @@ def build_ui() -> gr.Blocks:
                                              value=DEFAULT_VIDEO_MODEL_LABEL,
                                              label="Modello video nativo",
                                              visible=False)
-                whisper_model_in = gr.Textbox(
-                    label="Path modello whisper.cpp",
-                    value=str(default_whisper) if default_whisper else "",
-                    placeholder="vuoto = download automatico ggml-large-v3-turbo-q5_0.bin",
-                    lines=1, visible=False,
+                whisper_model_in = gr.Dropdown(
+                    choices=list(WHISPER_MODELS.keys()),
+                    value=DEFAULT_WHISPER_MODEL_LABEL,
+                    label="Modello whisper.cpp (audio)",
+                    info="Scaricato automaticamente in ~/.cache/whisper.cpp/ al primo uso.",
+                    visible=False,
                 )
                 language_in = gr.Radio(
                     choices=list(LANGUAGE_CHOICES.keys()),
@@ -383,7 +446,9 @@ def build_ui() -> gr.Blocks:
                         4096, 32768, value=min(32768, CTX_PER_SLOT), step=4096,
                         label="Contesto per slot (token)",
                         info="8192 basta per le finestre standard; alza solo se compaiono errori di contesto.")
-                run_btn = gr.Button("🔍 Analizza", variant="primary", size="lg")
+                with gr.Row():
+                    run_btn = gr.Button("🔍 Analizza", variant="primary", size="lg")
+                    cancel_btn = gr.Button("⏹ Annulla", variant="stop", size="lg")
                 logs_out = gr.Textbox(label="Log", lines=14, interactive=False,
                                       elem_id="logs-box", autoscroll=True)
             with gr.Column(scale=2):
@@ -415,13 +480,16 @@ def build_ui() -> gr.Blocks:
 
         outputs = [logs_out, video_sel, player, table, gallery, json_out, csv_out,
                    summary_out, batch_json_out, batch_csv_out]
-        run_btn.click(
+        run_event = run_btn.click(
             run_analysis,
             [files_in, urls_in, pipeline_in, model_in, vision_model_in,
              video_model_in, whisper_model_in, language_in, conf_in,
              parallel_in, batch_in, ctx_in],
             outputs,
         )
+        # Gradio interrompe il generator di Analizza; request_cancel ferma
+        # anche whisper-cli e le finestre LLM ancora in coda.
+        cancel_btn.click(request_cancel, cancels=[run_event])
         video_sel.change(select_video, [video_sel],
                          [player, table, gallery, json_out, csv_out])
     return demo
