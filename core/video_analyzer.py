@@ -25,6 +25,7 @@ def _build_prompt(win: Window, lang: LanguagePack) -> str:
     template = PROMPT_PATH.read_text(encoding="utf-8")
     return template.format(
         win_duration=win.duration,
+        language_rule=lang.language_rule,
         description_language=lang.description_name,
     )
 

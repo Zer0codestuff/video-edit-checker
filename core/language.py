@@ -22,6 +22,8 @@ class LanguagePack:
     speech_name: str
     # Lingua in cui scrivere le description nel JSON.
     description_name: str
+    # Blocco obbligatorio da mettere in cima/fondo al prompt (anti-inglese di default).
+    language_rule: str
     # Esempi di frasi di ripresa per missed_cut (testo nel prompt).
     missed_cut_examples: str
     # Regex trigger per whisper transcript.
@@ -39,6 +41,11 @@ _PACKS: dict[str, LanguagePack] = {
         code="it",
         speech_name="Italian",
         description_name="Italian",
+        language_rule=(
+            "LANGUAGE REQUIREMENT (mandatory): the spoken audio is in Italian. "
+            "Every \"description\" string in your JSON MUST be written entirely "
+            "in Italian. Do NOT write descriptions in English."
+        ),
         missed_cut_examples=(
             '"lo ripeto", "aspetta", "rifacciamo", "da capo" '
             '("let me repeat", "wait", "let\'s redo it", "from the top")'
@@ -60,6 +67,11 @@ _PACKS: dict[str, LanguagePack] = {
         code="en",
         speech_name="English",
         description_name="English",
+        language_rule=(
+            "LANGUAGE REQUIREMENT (mandatory): the spoken audio is in English. "
+            "Every \"description\" string in your JSON MUST be written entirely "
+            "in English."
+        ),
         missed_cut_examples=(
             '"let me repeat", "wait", "let\'s redo it", "from the top", '
             '"sorry", "I messed up", "take two", "cut"'

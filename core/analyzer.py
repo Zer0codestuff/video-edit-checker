@@ -22,6 +22,7 @@ def _build_prompt(win: Window, lang: LanguagePack) -> str:
         win_start=win.start,
         win_end=win.start + win.duration,
         frame_times=frame_times,
+        language_rule=lang.language_rule,
         speech_language=lang.speech_name,
         description_language=lang.description_name,
         missed_cut_examples=lang.missed_cut_examples,

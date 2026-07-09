@@ -22,6 +22,9 @@ LogFn = Callable[[str], None]
 _MAX_RETRIES = 2
 _RETRY_BACKOFF_S = 1.5
 
+# Temperatura consigliata da Google per Gemma (chat / istruzioni).
+DEFAULT_TEMPERATURE = 0.95
+
 
 def b64(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("utf-8")
@@ -74,7 +77,7 @@ def call_chat(
     payload: dict[str, Any] = {
         "messages": [{"role": "user", "content": content}],
         "max_tokens": max_tokens,
-        "temperature": 0.0,
+        "temperature": DEFAULT_TEMPERATURE,
         "stream": False,
         "response_format": {
             "type": "json_schema",
