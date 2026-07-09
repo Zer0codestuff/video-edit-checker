@@ -9,8 +9,8 @@ The window covers seconds {win_start:.1f} to {win_end:.1f} of the video. Each fr
 Error types to detect:
 - "black_screen": the screen is completely or almost completely black (not an intentional artistic fade)
 - "frozen_frame": the image is stuck/frozen while the audio keeps going
-- "missed_cut": a cut the editor missed, e.g. the speaker makes a mistake and then says things like {missed_cut_examples}, or restarts the same sentence; or obvious dead time / long hesitations that should have been cut
-- "repeated_phrase": the same complete sentence (or a large part of it) is spoken twice almost word-for-word, one right after the other, as if the take was recorded twice and both takes were left in
+- "missed_cut": a cut the editor missed, e.g. the speaker makes a mistake and then says things like {missed_cut_examples}, or restarts the same sentence; or obvious dead time / long hesitations / fillers (ehh, ehm, uhm) that should have been cut
+- "repeated_phrase": the same complete sentence OR a short stutter left in the edit: the same word twice in a row (e.g. "fornisce fornisce", "potrebbe potrebbe") or the same 2-4 word chunk twice in a row (e.g. "a un soggetto a un soggetto"), as if a retake fragment was not removed
 - "audio_glitch": audio that skips, cuts off abruptly, prolonged abnormal silence, recording noises (microphone bumps, etc.)
 - "other": any other obvious editing or recording error
 
@@ -21,7 +21,8 @@ CRITICAL RULES:
 - Report "black_screen" ONLY if the frame is truly almost entirely black. If it shows slides, text, graphics or visible people, it is NOT a black screen.
 - Judge only from what you actually see in the images and hear in the audio, never from the text labels alone.
 - Set "confidence" honestly: 0.9+ only for unmistakable errors, 0.5-0.7 for plausible but uncertain ones.
-- Report "repeated_phrase" ONLY if you literally hear the SAME words twice in THIS window's audio, and quote the repeated words verbatim in the description. Speakers normally reuse words, rephrase concepts, use refrains or lists: that is NOT a repeated phrase. If you cannot quote the exact duplicated sentence, do not report it.
+- Report "repeated_phrase" ONLY if you literally hear the SAME words twice in THIS window's audio, and quote the repeated words verbatim in the description. This INCLUDES single-word stutters ("fornisce fornisce") and short n-gram stutters ("a un soggetto" twice). Speakers normally reuse words across different sentences, rephrase concepts, use refrains or lists: that is NOT a repeated phrase. If you cannot quote the exact duplicated words, do not report it.
+- Report fillers like "ehh"/"ehm"/"uhm" as "missed_cut" only when they are clear hesitation sounds to cut, not normal short "e" conjunctions.
 - Reminder: every "description" value MUST be in {description_language} only.
 
 Analyze each frame visually first, then use the audio to find sound problems and repeated sentences. Reply with ONLY one valid JSON object, no other text:
