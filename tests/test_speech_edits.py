@@ -107,6 +107,28 @@ class FillerTests(unittest.TestCase):
             errs = detect_fillers([_w(1.0, tok)], 5.0, lang)
             self.assertEqual(len(errs), 1, tok)
 
+    def test_isolated_m_filler(self):
+        from core.language import resolve_language
+        words = [
+            _w(26.0, "fase", 0.5),
+            _w(28.0, "m", 0.3),
+            _w(28.8, "valutiamo", 0.5),
+        ]
+        errs = detect_fillers(words, 40.0, resolve_language("it"))
+        self.assertEqual(len(errs), 1)
+        self.assertIn("m", errs[0].description)
+
+    def test_conjunction_e_not_filler(self):
+        from core.language import resolve_language
+        # «e» tra parole senza gap: congiunzione, non filler
+        words = [
+            _w(1.0, "probabilità", 0.5),
+            _w(1.5, "e", 0.1),
+            _w(1.6, "impatto", 0.4),
+        ]
+        errs = detect_fillers(words, 10.0, resolve_language("it"))
+        self.assertEqual(errs, [])
+
 
 class PipelineTests(unittest.TestCase):
     def test_combined_finds_all_gt_patterns(self):

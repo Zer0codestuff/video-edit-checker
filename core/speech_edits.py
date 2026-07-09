@@ -191,6 +191,23 @@ def detect_ngram_repeats(
     return errors
 
 
+def _is_isolated_letter_filler(w: TranscriptWord, prev: TranscriptWord | None,
+                               nxt: TranscriptWord | None) -> bool:
+    """Singola lettera tipo «m»/«e» solo se isolata (gap intorno, durata breve).
+
+    Whisper a volte riduce «ehh»/«ehm» a «m» o «e». Matchare ogni «e» nel
+    discorso italiano sarebbe un disastro di FP: richiediamo isolamento.
+    """
+    if w.text not in {"m", "e", "eh"}:
+        return False
+    dur = w.end - w.start
+    if dur > 0.55:
+        return False
+    gap_before = (w.start - prev.end) if prev is not None else 1.0
+    gap_after = (nxt.start - w.end) if nxt is not None else 1.0
+    return gap_before >= 0.25 and gap_after >= 0.25
+
+
 def detect_fillers(
     words: list[TranscriptWord],
     video_duration: float,
@@ -201,8 +218,13 @@ def detect_fillers(
     if not cfg.enable_fillers:
         return []
     errors: list[EditError] = []
-    for w in words:
-        if lang.filler_re.fullmatch(w.text):
+    for i, w in enumerate(words):
+        hit = bool(lang.filler_re.fullmatch(w.text))
+        if not hit:
+            prev = words[i - 1] if i > 0 else None
+            nxt = words[i + 1] if i + 1 < len(words) else None
+            hit = _is_isolated_letter_filler(w, prev, nxt)
+        if hit:
             errors.append(EditError(
                 type="missed_cut",
                 start=max(0.0, w.start - cfg.pad_before),
