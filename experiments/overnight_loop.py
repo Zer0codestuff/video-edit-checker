@@ -24,6 +24,7 @@ LOG = OUT / "overnight_loop.jsonl"
 MODELS = [
     "Small Q8 (~250 MB, piu veloce)",
     "Medium Q8 (default, ~785 MB)",
+    "Large v3 Turbo Q5 (~550 MB)",
 ]
 TEMPS = ["0.0", "0.6", "0.8"]
 
@@ -33,7 +34,12 @@ def run_once(model: str, temp: str) -> dict:
     env["WHISPER_TEMPERATURE"] = temp
     env["PYTHONPATH"] = str(ROOT)
     # Clear whisper cache for this model tag so temp changes take effect
-    tag = "medium" if "Medium" in model else "small"
+    if "Large" in model or "Turbo" in model:
+        tag = "large"
+    elif "Medium" in model:
+        tag = "medium"
+    else:
+        tag = "small"
     cache = OUT / f"whisper_{tag}"
     if cache.exists():
         subprocess.run(["rm", "-rf", str(cache)], check=False)

@@ -29,20 +29,20 @@ YouTube blocca gli IP cloud → corpus sintetico in `corpus/` che riproduce gli 
 1. **Word-token whisper (`-ojf`)** + merge BPE (senza `strip()` prematuro).
 2. **Ripetizioni adiacenti** unigram/n-gram con gap ≤ ~1.5s, ignorando stopword unigram.
 3. **Fallback sul testo del segmento** se i token sono fusi/storti.
-4. **`-mc 0` + temperatura ~0.6**: riduce il collasso «potrebbe potrebbe» → «potrebbe» (visto su medium a temp 0).
+4. **`-mc 0` + temperatura ~0.8**: riduce il collasso «potrebbe potrebbe» → «potrebbe» (visto su medium a temp 0).
 
 ## Cosa non funziona (o poco)
 
 1. Baseline a soli segmenti: **0 recall** sui GT del video 3.5.
-2. Filler «ehh»: whisper spesso li mappa a `e`/`m`/`ehm`; regex stretta su `ehh` non basta.
-3. Modelli whisper più grandi a **temp 0** “correggono” gli stutter → peggiorano il recall per questo task.
+2. Filler «ehh»: whisper spesso li mappa a `e`/`m`/`ehm`/`em`; regex stretta su `ehh` non basta.
+3. Modelli whisper più grandi (Large Turbo) “correggono” gli stutter → peggiorano il recall per questo task.
 4. Download YouTube da cloud: bot-check, serve run locale sul file reale.
 
 ## Whisper model size (importante)
 
 Per **trovare stutter**, i modelli più grandi non sono sempre meglio: Large v3 Turbo
 a temp 0.8 sul corpus sintetico collassa «anche anche» / «fornisce fornisce» e
-scende a F1 ~0.57. **Small/Medium** con temp 0.8 restano preferibili per questo task.
+scende a F1 ~0.57. **Small** con temp 0.8 è il migliore per questo task.
 
 | Modello whisper | Temp | F1 tipico (corpus GT) |
 |-----------------|------|------------------------|
@@ -54,7 +54,6 @@ scende a F1 ~0.57. **Small/Medium** con temp 0.8 restano preferibili per questo 
 
 Nuova opzione UI: whisper + euristiche pixel, **senza** VLM. Ideale quando gli
 errori sono quasi tutti di parlato (come il video 3.5). Molto più veloce.
-
 
 Temperatura: su **medium**, `0.0` collassa «potrebbe potrebbe»; `0.8` lo preserva (e spesso anche `ehm`). Default app: `0.8` (override `WHISPER_TEMPERATURE`).
 
