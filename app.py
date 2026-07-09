@@ -56,6 +56,9 @@ CSS = """
 #summary-box {border: 1px solid var(--border-color-primary); border-radius: 8px;
               padding: 12px 16px; max-height: 520px; overflow-y: auto}
 #logs-box textarea {font-family: var(--font-mono); font-size: 12px}
+/* Con show_progress=minimal il tracker resta in alto a destra e non
+   deve coprire il box Log sotto i pulsanti Analizza/Annulla. */
+#logs-box {position: relative; z-index: 2}
 footer {display: none !important}
 """
 
@@ -488,12 +491,15 @@ def build_ui() -> gr.Blocks:
 
         outputs = [logs_out, video_sel, player, table, gallery, json_out, csv_out,
                    summary_out, batch_json_out, batch_csv_out]
+        # "minimal": percentuale/ETA in alto a destra, senza overlay che
+        # copre Log e gli altri output durante l'analisi.
         run_event = run_btn.click(
             run_analysis,
             [files_in, urls_in, pipeline_in, model_in, vision_model_in,
              video_model_in, whisper_model_in, language_in, conf_in,
              parallel_in, batch_in, ctx_in],
             outputs,
+            show_progress="minimal",
         )
         # Gradio interrompe il generator di Analizza; request_cancel ferma
         # anche whisper-cli e le finestre LLM ancora in coda.
