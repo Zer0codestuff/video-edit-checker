@@ -411,11 +411,18 @@ def select_video(name):
 def _toggle_pipeline(pipeline_label):
     """Mostra solo i controlli rilevanti per la pipeline scelta."""
     pipeline = _pipeline_from_label(pipeline_label)
+    # Per errori di parlato Small preserva meglio gli stutter di Medium/Large.
+    whisper_default = (
+        "Small Q8 (~250 MB, piu veloce)"
+        if pipeline is Pipeline.SPEECH
+        else DEFAULT_WHISPER_MODEL_LABEL
+    )
     return (gr.update(visible=pipeline is Pipeline.OMNI),
             gr.update(visible=pipeline is Pipeline.HYBRID),
             gr.update(visible=pipeline is Pipeline.VIDEO),
             gr.update(visible=pipeline in {
-                Pipeline.HYBRID, Pipeline.VIDEO, Pipeline.SPEECH}))
+                Pipeline.HYBRID, Pipeline.VIDEO, Pipeline.SPEECH},
+                value=whisper_default))
 
 
 def build_ui() -> gr.Blocks:
@@ -453,10 +460,12 @@ def build_ui() -> gr.Blocks:
                                              visible=False)
                 whisper_model_in = gr.Dropdown(
                     choices=list(WHISPER_MODELS.keys()),
-                    value=DEFAULT_WHISPER_MODEL_LABEL,
+                    value="Small Q8 (~250 MB, piu veloce)",
                     label="Modello whisper.cpp (audio)",
-                    info="Scaricato automaticamente in ~/.cache/whisper.cpp/ al primo uso.",
-                    visible=False,
+                    info="Per stutter/filler preferisci Small (temp 0.8). "
+                         "Large spesso 'corregge' le ripetizioni. "
+                         "Scaricato in ~/.cache/whisper.cpp/ al primo uso.",
+                    visible=True,
                 )
                 language_in = gr.Radio(
                     choices=list(LANGUAGE_CHOICES.keys()),
