@@ -24,20 +24,36 @@ DEFAULT_MODEL_LABEL = "Gemma 4 E2B QAT (leggero + MTP, ~3 GB RAM)"
 # Modelli che shippano un drafter MTP (speculative decoding) nel repo HF.
 # I flag MTP richiedono una build recente di llama.cpp; su build piu' vecchie
 # il drafter viene semplicemente ignorato e il modello gira normalmente.
+# Nota: con mmproj (vision) MTP e' ancora sperimentale; forziamo -np 1.
 MTP_MODELS: set[str] = {
     "unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL",
     "unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL",
+    "unsloth/Qwen3.5-4B-MTP-GGUF:UD-Q4_K_XL",
 }
 
-VISION_MODELS: dict[str, str] = {
-    "LiquidAI LFM2.5-VL 1.6B Q8 (vision-only, leggero)": "LiquidAI/LFM2.5-VL-1.6B-GGUF:Q8_0",
-    "LiquidAI LFM2.5-VL 1.6B Q4 (vision-only, minimo consumo)": "LiquidAI/LFM2.5-VL-1.6B-GGUF:Q4_0",
-    "SmolVLM2 500M Video (vision-only, velocissimo)": "ggml-org/SmolVLM2-500M-Video-Instruct-GGUF",
-    "Qwen2.5-VL 3B (vision-only, piu accurato)": "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF",
-    "InternVL3.5 4B Q4_K_M (vision-only, accurato, ~3 GB)":
-        "bartowski/OpenGVLab_InternVL3_5-4B-GGUF:Q4_K_M",
+# Vision-only: (repo_hf:quant, jinja). jinja=True per modelli thinking
+# (Qwen3.5) cosi' il client puo' passare enable_thinking=false.
+VISION_MODELS: dict[str, tuple[str, bool]] = {
+    "InternVL3.5 4B Q4_K_M (default, accurato, ~3 GB)":
+        ("bartowski/OpenGVLab_InternVL3_5-4B-GGUF:Q4_K_M", False),
+    "InternVL3.5 2B Q4_K_M (bilanciato, ~1.3 GB)":
+        ("bartowski/OpenGVLab_InternVL3_5-2B-GGUF:Q4_K_M", False),
+    "InternVL3.5 1B Q4_K_M (leggero, ~0.5 GB)":
+        ("bartowski/OpenGVLab_InternVL3_5-1B-GGUF:Q4_K_M", False),
+    "Qwen3.5 4B UD-Q4_K_XL (Unsloth, thinking off, ~3 GB)":
+        ("unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL", True),
+    "Qwen3.5 4B MTP UD-Q4_K_XL (Unsloth + MTP, sperimentale vision)":
+        ("unsloth/Qwen3.5-4B-MTP-GGUF:UD-Q4_K_XL", True),
+    "LiquidAI LFM2.5-VL 1.6B Q8 (vision-only, leggero)":
+        ("LiquidAI/LFM2.5-VL-1.6B-GGUF:Q8_0", False),
+    "LiquidAI LFM2.5-VL 1.6B Q4 (vision-only, minimo consumo)":
+        ("LiquidAI/LFM2.5-VL-1.6B-GGUF:Q4_0", False),
+    "SmolVLM2 500M Video (vision-only, velocissimo)":
+        ("ggml-org/SmolVLM2-500M-Video-Instruct-GGUF", False),
+    "Qwen2.5-VL 3B (vision-only, piu accurato)":
+        ("ggml-org/Qwen2.5-VL-3B-Instruct-GGUF", False),
 }
-DEFAULT_VISION_MODEL_LABEL = "LiquidAI LFM2.5-VL 1.6B Q8 (vision-only, leggero)"
+DEFAULT_VISION_MODEL_LABEL = "InternVL3.5 4B Q4_K_M (default, accurato, ~3 GB)"
 
 # Modelli per la pipeline video nativa: llama-server decodifica le clip mp4
 # internamente (input_video, richiede build >= giugno 2026 + ffmpeg nel PATH)
@@ -212,8 +228,15 @@ class LlamaServer:
         ctx_per_slot = max(4096, int(ctx_per_slot or CTX_PER_SLOT))
         batch, ubatch = BATCH_PRESETS.get(batch_preset or "",
                                           BATCH_PRESETS[DEFAULT_BATCH_PRESET])
+        use_mtp = hf_model in MTP_MODELS
+        # MTP + mmproj / -np>1 non e' ancora supportato in modo affidabile
+        # (nota Unsloth/llama.cpp): con vision forziamo 1 slot.
+        if use_mtp and n_parallel > 1:
+            log(f"MTP: riduco gli slot paralleli da {n_parallel} a 1 "
+                "(mmproj/MTP non supporta -np > 1).")
+            n_parallel = 1
         key = (f"{hf_model}|{mmproj_url or ''}|{jinja}"
-               f"|{n_parallel}|{ctx_per_slot}|{batch}|{ubatch}")
+               f"|{n_parallel}|{ctx_per_slot}|{batch}|{ubatch}|mtp={use_mtp}")
         self.n_parallel = n_parallel
         if self.is_running() and self.current_key == key:
             return
@@ -241,7 +264,7 @@ class LlamaServer:
             cmd += ["--jinja"]
         # MTP speculative decoding: il drafter e' auto-scoperto da -hf.
         # Richiede build llama.cpp recente (>= b9500 circa).
-        if hf_model in MTP_MODELS:
+        if use_mtp:
             cmd += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "4"]
             log("MTP speculative decoding attivo per questo modello.")
         env = os.environ.copy()

@@ -162,7 +162,8 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
             SERVER.ensure(video_hf, mmproj_url=video_mmproj,
                           jinja=video_jinja, log=log_fn, **perf)
         elif use_hybrid:
-            SERVER.ensure(VISION_MODELS[vision_model_label], log=log_fn, **perf)
+            vision_hf, vision_jinja = VISION_MODELS[vision_model_label]
+            SERVER.ensure(vision_hf, jinja=vision_jinja, log=log_fn, **perf)
         else:
             SERVER.ensure(MODELS[model_label], log=log_fn, **perf)
 

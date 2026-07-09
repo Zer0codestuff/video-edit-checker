@@ -44,6 +44,9 @@ def analyze_window_vision(win: Window, timeout: float = 600.0, log=print,
         _build_content(win, lang),
         timeout=timeout,
         max_tokens=1200,
+        # Qwen3.5 (e simili) sono thinking-by-default: senza questo bruciano
+        # i token in reasoning_content. Ignorato dai modelli senza template.
+        enable_thinking=False,
         log=log,
         error_label=f"finestra {win.index} vision-only",
     )

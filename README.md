@@ -76,10 +76,14 @@ L'interfaccia web sara disponibile su **http://127.0.0.1:7860**. Al primo "Anali
 
 | Modello vision | Parametri | Note |
 |----------------|-----------|------|
+| `InternVL3.5-4B` Q4_K_M | 4B | **Default**, accurato, ~3 GB |
+| `InternVL3.5-2B` Q4_K_M | 2B | Bilanciato, ~1.3 GB |
+| `InternVL3.5-1B` Q4_K_M | 1B | Leggero, ~0.5 GB |
+| `unsloth/Qwen3.5-4B-GGUF` UD-Q4_K_XL | 4B | Thinking off via jinja |
+| `unsloth/Qwen3.5-4B-MTP-GGUF` UD-Q4_K_XL | 4B | MTP speculative (sperimentale con vision) |
 | `LiquidAI/LFM2.5-VL-1.6B` Q8/Q4 | 1.6B | Leggerissimo |
 | `SmolVLM2-500M-Video` | 0.5B | Velocissimo |
 | `Qwen2.5-VL-3B-Instruct` | 3B | Piu accurato |
-| `bartowski/OpenGVLab_InternVL3_5-4B-GGUF` Q4_K_M | 4B | Accurato, ~3 GB |
 
 L'audio delle pipeline ibrida/video usa whisper.cpp. Default: `ggml-medium-q8_0` (~785 MB, scaricato automaticamente al primo uso). Dal menu puoi scegliere anche Small/Base (piu leggeri) o Large v3 Turbo.
 
