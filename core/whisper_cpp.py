@@ -406,11 +406,13 @@ def transcribe_video(
     # Temperatura > 0 aiuta a NON collassare ripetizioni identiche
     # (es. «potrebbe potrebbe») in una sola parola. Override con
     # WHISPER_TEMPERATURE=0 per il comportamento classico.
-    temp = os.environ.get("WHISPER_TEMPERATURE", "0.6").strip()
+    # 0.8: sui modelli medium+ a temp 0 gli stutter collassano; 0.8 li
+    # preserva (es. «potrebbe potrebbe») senza degradare troppo il testo.
+    temp = os.environ.get("WHISPER_TEMPERATURE", "0.8").strip()
     try:
         temp_f = float(temp)
     except ValueError:
-        temp_f = 0.6
+        temp_f = 0.8
     if temp_f > 0:
         cmd.extend(["-tp", f"{temp_f:g}"])
     # Prompt iniziale: invita a trascrivere esitazioni/filler invece di

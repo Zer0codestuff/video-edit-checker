@@ -39,7 +39,33 @@ YouTube blocca gli IP cloud → corpus sintetico in `corpus/` che riproduce gli 
 
 ## Configurazione scelta in produzione
 
-`detect_speech_edit_errors` con word + n-gram + filler + text fallback + baseline segmenti, e whisper con `-mc 0 -sow -tp 0.6` + prompt anti-smoothing.
+`detect_speech_edit_errors` con word + n-gram + filler + text fallback + baseline segmenti, e whisper con `-mc 0 -sow -tp 0.8` + prompt anti-smoothing.
+
+Temperatura: su **medium**, `0.0` collassa «potrebbe potrebbe»; `0.8` lo preserva (e spesso anche `ehm`). Default app: `0.8` (override `WHISPER_TEMPERATURE`).
+
+## LLM-on-transcript (Gemma E2B QAT) — peggiore delle euristiche
+
+Modulo sperimentale `core/transcript_llm.py` (non collegato all'app di default).
+
+| Caso | Euristiche | LLM E2B (few-shot) |
+|------|------------|--------------------|
+| fornisce fornisce | TP | TP |
+| potrebbe potrebbe | TP | spesso FN |
+| ehm | TP | FN |
+| neg_clean | OK vuoto | **FP** (allucina ripetizione) |
+| neg_refrain | OK vuoto | **FP** |
+
+Conclusione: con modelli piccoli testo-only, le regole word-level battono l'LLM su precision/recall per questo task. L'LLM resta utile solo come secondo parere opzionale con modelli più grandi.
+
+## Loop notturno
+
+```bash
+WHISPER_TEMPERATURE=0.8 python experiments/overnight_loop.py
+# oppure un ciclo solo:
+python experiments/overnight_loop.py --once
+```
+
+Log: `experiments/results/overnight_loop.jsonl`
 
 ## Come rieseguire
 
