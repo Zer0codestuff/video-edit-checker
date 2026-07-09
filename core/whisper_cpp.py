@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import threading
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -38,10 +38,19 @@ _active_procs: set[subprocess.Popen] = set()
 
 
 @dataclass
+class TranscriptWord:
+    """Token word-level da whisper.cpp (-ojf)."""
+    start: float
+    end: float
+    text: str
+
+
+@dataclass
 class TranscriptSegment:
     start: float
     end: float
     text: str
+    words: list[TranscriptWord] = field(default_factory=list)
 
 
 def _model_url(filename: str) -> str:
@@ -206,6 +215,79 @@ def _to_seconds(value) -> float:
     return hours * 3600 + minutes * 60 + seconds
 
 
+_SPECIAL_TOKEN_RE = re.compile(r"^\[.*\]$")
+
+
+def _parse_words(raw_tokens) -> list[TranscriptWord]:
+    """Estrae parole dai token full-json di whisper.cpp, saltando [_BEG_]/[_TT_...] ecc."""
+    words: list[TranscriptWord] = []
+    if not isinstance(raw_tokens, list):
+        return words
+    for tok in raw_tokens:
+        if not isinstance(tok, dict):
+            continue
+        text = str(tok.get("text", "")).strip()
+        if not text or _SPECIAL_TOKEN_RE.match(text):
+            continue
+        # I token whisper sono spesso sotto-parola (" gest"+"ione"); li
+        # teniamo cosi' e li ricomponiamo sotto in parole.
+        ts = tok.get("timestamps") or {}
+        start = _to_seconds(tok.get("start", ts.get("from", 0)))
+        end = _to_seconds(tok.get("end", ts.get("to", start)))
+        words.append(TranscriptWord(start, end, text))
+    return _merge_subword_tokens(words)
+
+
+def _merge_subword_tokens(tokens: list[TranscriptWord]) -> list[TranscriptWord]:
+    """Ricompone sotto-parole whisper in parole separate da spazio.
+
+    whisper.cpp emette token BPE: " for"+"nisce" → "fornisce".
+    Un nuovo token che inizia con spazio (o e' interamente punteggiatura)
+    chiude la parola precedente.
+    """
+    if not tokens:
+        return []
+    merged: list[TranscriptWord] = []
+    buf_text = ""
+    buf_start = 0.0
+    buf_end = 0.0
+
+    def _flush() -> None:
+        nonlocal buf_text
+        cleaned = re.sub(r"[^\wàèéìòùáéíóúäëïöüñç']", "", buf_text, flags=re.I)
+        cleaned = cleaned.lower().strip("'")
+        if cleaned:
+            merged.append(TranscriptWord(buf_start, buf_end, cleaned))
+        buf_text = ""
+
+    for tok in tokens:
+        raw = tok.text
+        starts_new = raw[:1].isspace() or (buf_text == "")
+        piece = raw.strip()
+        if not piece:
+            continue
+        # Punteggiatura isolata: chiudi parola, non aggiungere token.
+        if re.fullmatch(r"[^\wàèéìòù']+", piece, flags=re.I):
+            if buf_text:
+                _flush()
+            continue
+        if starts_new and buf_text:
+            _flush()
+            buf_start = tok.start
+            buf_text = piece
+            buf_end = tok.end
+        elif not buf_text:
+            buf_start = tok.start
+            buf_text = piece
+            buf_end = tok.end
+        else:
+            buf_text += piece
+            buf_end = tok.end
+    if buf_text:
+        _flush()
+    return merged
+
+
 def _parse_json(path: Path) -> list[TranscriptSegment]:
     data = json.loads(path.read_text(encoding="utf-8"))
     raw_segments = data.get("transcription") or data.get("segments") or []
@@ -217,7 +299,10 @@ def _parse_json(path: Path) -> list[TranscriptSegment]:
         ts = item.get("timestamps") or {}
         start = item.get("start", ts.get("from", 0))
         end = item.get("end", ts.get("to", start))
-        segments.append(TranscriptSegment(_to_seconds(start), _to_seconds(end), text))
+        words = _parse_words(item.get("tokens") or item.get("words") or [])
+        segments.append(TranscriptSegment(
+            _to_seconds(start), _to_seconds(end), text, words=words,
+        ))
     return segments
 
 

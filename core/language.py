@@ -28,12 +28,17 @@ class LanguagePack:
     missed_cut_examples: str
     # Regex trigger per whisper transcript.
     trigger_re: re.Pattern[str]
+    # Filler / esitazioni evidenti da tagliare (match su parola intera).
+    filler_re: re.Pattern[str]
     # Descrizioni euristiche / transcript.
     black_screen_desc: str
     frozen_frame_desc: str
     missed_cut_desc: str  # format con {quote}
     repeated_phrase_desc: str  # format con {a}, {b}
     audio_gap_desc: str  # format con {gap}
+    word_repeat_desc: str  # format con {quote}
+    ngram_repeat_desc: str  # format con {quote}, {n}
+    filler_desc: str  # format con {quote}
 
 
 _PACKS: dict[str, LanguagePack] = {
@@ -57,11 +62,18 @@ _PACKS: dict[str, LanguagePack] = {
             r")\b",
             re.IGNORECASE,
         ),
+        filler_re=re.compile(
+            r"^(ehh+|eee+|eeehm*|aaah*|ahh+|uhm+|mmh+|mh+|ehm+|erm+)$",
+            re.IGNORECASE,
+        ),
         black_screen_desc="Schermo nero prolungato rilevato con analisi luminanza.",
         frozen_frame_desc="Sequenza di frame quasi identici rilevata con confronto pixel.",
         missed_cut_desc="Possibile taglio mancato: frase di ripresa nel parlato («{quote}»).",
         repeated_phrase_desc="Possibile frase ripetuta: «{a}» / «{b}».",
         audio_gap_desc="Silenzio o vuoto audio anomalo di circa {gap:.1f} secondi.",
+        word_repeat_desc="Parola in più da tagliare: «{quote}» ripetuta subito dopo.",
+        ngram_repeat_desc="Ripresa/stutter da tagliare: «{quote}» ripetuto ({n} parole).",
+        filler_desc="Esitazione/filler da tagliare: «{quote}».",
     ),
     "en": LanguagePack(
         code="en",
@@ -84,11 +96,18 @@ _PACKS: dict[str, LanguagePack] = {
             r")\b",
             re.IGNORECASE,
         ),
+        filler_re=re.compile(
+            r"^(uh+|um+|uhm+|erm+|ah+|eh+|mm+|hmm+|like)$",
+            re.IGNORECASE,
+        ),
         black_screen_desc="Prolonged black screen detected via luminance analysis.",
         frozen_frame_desc="Near-identical frame sequence detected via pixel comparison.",
         missed_cut_desc="Possible missed cut: retake phrase in speech («{quote}»).",
         repeated_phrase_desc="Possible repeated phrase: «{a}» / «{b}».",
         audio_gap_desc="Abnormal silence or audio gap of about {gap:.1f} seconds.",
+        word_repeat_desc="Extra word to cut: «{quote}» repeated immediately.",
+        ngram_repeat_desc="Stutter/retake to cut: «{quote}» repeated ({n} words).",
+        filler_desc="Filler/hesitation to cut: «{quote}».",
     ),
 }
 

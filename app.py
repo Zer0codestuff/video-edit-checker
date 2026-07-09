@@ -35,6 +35,7 @@ from core.report import (batch_summary_md, export_batch, export_csv,
                          fmt_time, merge_errors)
 from core.video_analyzer import video_analyzer_for
 from core.vision_analyzer import vision_analyzer_for
+from core.speech_edits import detect_speech_edit_errors
 from core.whisper_cpp import (DEFAULT_WHISPER_MODEL_LABEL, WHISPER_MODELS,
                               detect_transcript_errors, kill_orphan_whisper,
                               stop_tracked_whisper, transcribe_video)
@@ -261,8 +262,14 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                 aborted = True
                 break
             if segments:
-                raw_errors.extend(detect_transcript_errors(
-                    segments, probe_duration(video), language=lang))
+                # Word-level (filler, parola/n-gram ripetuti) + baseline
+                # a segmenti (trigger "aspetta/lo ripeto", frasi duplicate).
+                raw_errors.extend(detect_speech_edit_errors(
+                    segments,
+                    probe_duration(video),
+                    language=lang,
+                    baseline_fn=detect_transcript_errors,
+                ))
             yield partial()
             progress(0.05 + 0.25 * ((v_i + 0.5) / max(1, total)),
                      desc=f"{name}: avvio modello vision...")

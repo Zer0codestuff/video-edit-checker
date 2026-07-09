@@ -143,22 +143,34 @@ def _safe_extract_zip(archive: Path, dest: Path) -> None:
 
 
 def _safe_extract_tar(archive: Path, dest: Path) -> None:
+    """Estrae un tar rifiutando path traversal; i symlink relativi restano ok.
+
+    Le release ufficiali whisper.cpp / llama.cpp su Linux usano symlink
+    versionati (libwhisper.so -> libwhisper.so.1). Bloccandoli l'installer
+    falliva su Ubuntu. Accettiamo solo link il cui target resta dentro dest.
+    """
     with tarfile.open(archive) as t:
-        for member in t.getmembers():
+        members = t.getmembers()
+        for member in members:
             name = member.name
             path = Path(name)
             if path.is_absolute() or ".." in path.parts:
                 die(f"Archivio sospetto (path traversal): {name}")
-            if member.issym() or member.islnk():
-                die(f"Archivio sospetto (symlink/hardlink): {name}")
             target = dest / path
             if not _is_within_directory(dest, target):
                 die(f"Archivio sospetto (path fuori destinazione): {name}")
-        # filter="data" (Python 3.12+) rifiuta path pericolosi; fallback manuale sopra.
-        try:
-            t.extractall(dest, filter="data")
-        except TypeError:
-            t.extractall(dest)
+            if member.issym() or member.islnk():
+                link = member.linkname or ""
+                # Rifiuta link assoluti o che escono da dest.
+                link_path = Path(link)
+                if link_path.is_absolute():
+                    die(f"Archivio sospetto (symlink assoluto): {name} -> {link}")
+                resolved = (target.parent / link_path).resolve()
+                if not _is_within_directory(dest.resolve(), resolved):
+                    die(f"Archivio sospetto (symlink fuori destinazione): {name} -> {link}")
+        # filter="data" (Python 3.12+) rifiuta i symlink: usiamo l'estrazione
+        # manuale gia' validata sopra, cosi' le .so versionate funzionano.
+        t.extractall(dest)
 
 
 def extract(archive: Path, dest: Path) -> None:
