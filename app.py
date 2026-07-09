@@ -17,11 +17,12 @@ from pathlib import Path
 
 import gradio as gr
 
-from core.analyzer import analyze_window
+from core.analyzer import analyzer_for
 from core.binaries import has_whisper, missing_required, setup_path
 from core.constants import WINDOW_FUTURE_TIMEOUT_SECONDS
 from core.heuristics import detect_visual_heuristics, verify_visual_errors
 from core.ingest import collect_local_files, download_youtube
+from core.language import DEFAULT_LANGUAGE_LABEL, LANGUAGE_CHOICES, resolve_language
 from core.llama_server import (BATCH_PRESETS, CTX_PER_SLOT,
                                DEFAULT_BATCH_PRESET, DEFAULT_MODEL_LABEL,
                                DEFAULT_VIDEO_MODEL_LABEL,
@@ -31,8 +32,8 @@ from core.models import EditError
 from core.report import (batch_summary_md, export_batch, export_csv,
                          export_json, extract_thumbnail, filter_errors,
                          fmt_time, merge_errors)
-from core.video_analyzer import analyze_window_video
-from core.vision_analyzer import analyze_window_vision
+from core.video_analyzer import video_analyzer_for
+from core.vision_analyzer import vision_analyzer_for
 from core.whisper_cpp import (detect_transcript_errors, find_default_model,
                               transcribe_video)
 from core.windows import make_windows, probe_duration
@@ -92,11 +93,12 @@ def _pipeline_from_label(label: str) -> Pipeline:
 
 
 def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_label,
-                 video_model_label, whisper_model_path, min_confidence,
-                 n_parallel, batch_preset, ctx_per_slot,
+                 video_model_label, whisper_model_path, language_label,
+                 min_confidence, n_parallel, batch_preset, ctx_per_slot,
                  progress=gr.Progress()):
     logs: list[str] = []
     RESULTS.clear()
+    lang = resolve_language(language_label)
 
     def log(msg: str):
         logs.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
@@ -121,7 +123,7 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
         yield partial()
         return
 
-    log(f"{len(videos)} video in coda.")
+    log(f"{len(videos)} video in coda. Lingua analisi: {language_label} ({lang.code}).")
     yield partial()
 
     # 2. Avvia il modello richiesto
@@ -173,11 +175,11 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
 
         raw_errors: list[EditError] = []
         if use_video:
-            analyze = analyze_window_video
+            analyze = video_analyzer_for(lang)
         elif use_hybrid:
-            analyze = analyze_window_vision
+            analyze = vision_analyzer_for(lang)
         else:
-            analyze = analyze_window
+            analyze = analyzer_for(lang)
         # Tante richieste LLM in volo quanti sono gli slot llama-server +
         # whisper su CPU in parallelo, per non lasciare ferma la GPU.
         # shutdown(wait=False, cancel_futures=True): un future in timeout
@@ -192,13 +194,14 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                         "+ clip mp4 al modello video.")
                 else:
                     log("Pipeline ibrida: euristiche visive + whisper.cpp + modello vision-only.")
-                raw_errors.extend(detect_visual_heuristics(wins, log=log))
+                raw_errors.extend(detect_visual_heuristics(
+                    wins, log=log, language=lang))
                 transcript_future = bg_pool.submit(
                     transcribe_video,
                     video,
                     vdir / "whisper",
                     model_path=whisper_model_path or "",
-                    language="it",
+                    language=lang.code,
                     log=log,
                 )
 
@@ -241,7 +244,7 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                     segments = []
                 if segments:
                     raw_errors.extend(detect_transcript_errors(
-                        segments, probe_duration(video)))
+                        segments, probe_duration(video), language=lang))
         finally:
             llm_pool.shutdown(wait=False, cancel_futures=True)
             bg_pool.shutdown(wait=False, cancel_futures=True)
@@ -351,6 +354,13 @@ def build_ui() -> gr.Blocks:
                     placeholder="vuoto = download automatico ggml-large-v3-turbo-q5_0.bin",
                     lines=1, visible=False,
                 )
+                language_in = gr.Radio(
+                    choices=list(LANGUAGE_CHOICES.keys()),
+                    value=DEFAULT_LANGUAGE_LABEL,
+                    label="Lingua del video",
+                    info="Imposta la lingua del parlato e delle descrizioni nel report "
+                         "(whisper + prompt del modello).",
+                )
                 conf_in = gr.Slider(0.0, 1.0, value=0.5, step=0.05,
                                     label="Soglia confidence",
                                     info="Alza per meno falsi positivi, abbassa per piu' segnalazioni.")
@@ -408,7 +418,7 @@ def build_ui() -> gr.Blocks:
         run_btn.click(
             run_analysis,
             [files_in, urls_in, pipeline_in, model_in, vision_model_in,
-             video_model_in, whisper_model_in, conf_in,
+             video_model_in, whisper_model_in, language_in, conf_in,
              parallel_in, batch_in, ctx_in],
             outputs,
         )

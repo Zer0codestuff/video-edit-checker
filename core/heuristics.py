@@ -7,6 +7,7 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageStat
 
 from core.constants import BLACK_MIN_DURATION_SECONDS
+from core.language import LanguagePack, resolve_language
 from core.models import EditError
 from core.windows import FRAME_EVERY_SECONDS, Window
 
@@ -47,7 +48,12 @@ def _collect_frames(windows: list[Window]) -> list[tuple[float, Path]]:
     return deduped
 
 
-def detect_visual_heuristics(windows: list[Window], log=print) -> list[EditError]:
+def detect_visual_heuristics(
+    windows: list[Window],
+    log=print,
+    language: str | LanguagePack = "it",
+) -> list[EditError]:
+    lang = language if isinstance(language, LanguagePack) else resolve_language(language)
     errors: list[EditError] = []
     frames = _collect_frames(windows)
 
@@ -74,7 +80,7 @@ def detect_visual_heuristics(windows: list[Window], log=print) -> list[EditError
             type="black_screen",
             start=seg_start,
             end=seg_end,
-            description="Schermo nero prolungato rilevato con analisi luminanza.",
+            description=lang.black_screen_desc,
             confidence=0.88,
         ))
 
@@ -95,7 +101,7 @@ def detect_visual_heuristics(windows: list[Window], log=print) -> list[EditError
                     type="frozen_frame",
                     start=freeze_start,
                     end=last_t + FRAME_EVERY_SECONDS,
-                    description="Sequenza di frame quasi identici rilevata con confronto pixel.",
+                    description=lang.frozen_frame_desc,
                     confidence=0.78,
                 ))
             freeze_start = None
@@ -106,7 +112,7 @@ def detect_visual_heuristics(windows: list[Window], log=print) -> list[EditError
             type="frozen_frame",
             start=freeze_start,
             end=last_t + FRAME_EVERY_SECONDS,
-            description="Sequenza di frame quasi identici rilevata con confronto pixel.",
+            description=lang.frozen_frame_desc,
             confidence=0.78,
         ))
 

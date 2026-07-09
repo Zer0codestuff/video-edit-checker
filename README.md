@@ -51,8 +51,9 @@ L'interfaccia web sara disponibile su **http://127.0.0.1:7860**. Al primo "Anali
    - **Omni VLM**: un solo modello che vede e sente (audio + visione)
    - **Vision + whisper.cpp** (consigliata sui PC leggeri): euristiche pixel + modello vision-only per i frame + whisper.cpp per l'audio
    - **Video nativo + whisper.cpp** (sperimentale): la clip mp4 di ogni finestra viene passata direttamente al modello, che la campiona a 4 fps (~12x piu frame della pipeline ibrida)
-3. Premi **Analizza** e consulta gli errori nella **tabella** e nella **galleria di screenshot**.
-4. Scarica il **report JSON o CSV** per ogni video.
+3. Imposta la **lingua del video** (Italiano / English): guida whisper.cpp, i prompt del modello e le descrizioni nel report.
+4. Premi **Analizza** e consulta gli errori nella **tabella** e nella **galleria di screenshot**.
+5. Scarica il **report JSON o CSV** per ogni video.
 
 ## Modelli supportati
 

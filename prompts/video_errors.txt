@@ -15,5 +15,5 @@ CRITICAL RULES:
 - Set "confidence" honestly: 0.9+ only for unmistakable errors.
 
 Reply with ONLY one valid JSON object, no other text:
-{{"errors": [{{"type": "black_screen", "start": 1.0, "end": 2.0, "description": "<short explanation written in Italian>", "confidence": 0.8}}]}}
+{{"errors": [{{"type": "black_screen", "start": 1.0, "end": 2.0, "description": "<short explanation written in {description_language}>", "confidence": 0.8}}]}}
 If you see no errors, reply {{"errors": []}}.

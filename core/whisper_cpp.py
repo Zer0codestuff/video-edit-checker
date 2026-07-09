@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from core.language import LanguagePack, resolve_language
 from core.models import EditError
 
 CACHE_DIR = Path.home() / ".cache" / "whisper.cpp"
@@ -24,15 +25,6 @@ class TranscriptSegment:
     start: float
     end: float
     text: str
-
-
-TRIGGER_RE = re.compile(
-    r"\b("
-    r"lo ripeto|ripeto|aspetta|rifacciamo|da capo|taglia|tagliamo|"
-    r"scusa|sbagliato|ho sbagliato|errore|riparto|riprovo|un attimo"
-    r")\b",
-    re.IGNORECASE,
-)
 
 
 def find_default_model() -> Path | None:
@@ -175,15 +167,20 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\sàèéìòù]", " ", text.lower())).strip()
 
 
-def detect_transcript_errors(segments: list[TranscriptSegment], video_duration: float) -> list[EditError]:
+def detect_transcript_errors(
+    segments: list[TranscriptSegment],
+    video_duration: float,
+    language: str | LanguagePack = "it",
+) -> list[EditError]:
+    lang = language if isinstance(language, LanguagePack) else resolve_language(language)
     errors: list[EditError] = []
     for seg in segments:
-        if TRIGGER_RE.search(seg.text):
+        if lang.trigger_re.search(seg.text):
             errors.append(EditError(
                 type="missed_cut",
                 start=max(0.0, seg.start - 1.0),
                 end=min(video_duration, seg.end + 4.0),
-                description=f"Possibile taglio mancato: frase di ripresa nel parlato («{seg.text[:120]}»).",
+                description=lang.missed_cut_desc.format(quote=seg.text[:120]),
                 confidence=0.82,
             ))
 
@@ -198,7 +195,8 @@ def detect_transcript_errors(segments: list[TranscriptSegment], video_duration: 
                     type="repeated_phrase",
                     start=prev.start,
                     end=cur.end,
-                    description=f"Possibile frase ripetuta: «{prev.text[:80]}» / «{cur.text[:80]}».",
+                    description=lang.repeated_phrase_desc.format(
+                        a=prev.text[:80], b=cur.text[:80]),
                     confidence=min(0.95, 0.55 + ratio * 0.4),
                 ))
         if gap >= 5.0 and prev.end > 2.0 and cur.start < video_duration - 2.0:
@@ -206,7 +204,7 @@ def detect_transcript_errors(segments: list[TranscriptSegment], video_duration: 
                 type="audio_glitch",
                 start=prev.end,
                 end=cur.start,
-                description=f"Silenzio o vuoto audio anomalo di circa {gap:.1f} secondi.",
+                description=lang.audio_gap_desc.format(gap=gap),
                 confidence=min(0.9, 0.55 + gap / 20.0),
             ))
     return errors
