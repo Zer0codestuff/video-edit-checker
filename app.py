@@ -48,6 +48,7 @@ class Pipeline(str, Enum):
     OMNI = "Omni VLM (audio + visione, singolo modello)"
     HYBRID = "Vision + whisper.cpp (leggero, modulare)"
     VIDEO = "Video nativo + whisper.cpp (clip mp4 al modello, sperimentale)"
+    SPEECH = "Solo parlato (whisper.cpp, senza VLM)"
 
 
 PIPELINES = [p.value for p in Pipeline]
@@ -153,7 +154,8 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
     pipeline = _pipeline_from_label(pipeline_label)
     use_hybrid = pipeline is Pipeline.HYBRID
     use_video = pipeline is Pipeline.VIDEO
-    use_modular = use_hybrid or use_video
+    use_speech = pipeline is Pipeline.SPEECH
+    use_modular = use_hybrid or use_video or use_speech
     perf = dict(n_parallel=int(n_parallel), ctx_per_slot=int(ctx_per_slot),
                 batch_preset=batch_preset)
     log(f"Prestazioni: {perf['n_parallel']} slot paralleli, "
@@ -161,6 +163,8 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
 
     def ensure_llm(log_fn=log) -> None:
         """Avvia (o riavvia) llama-server col modello della pipeline corrente."""
+        if use_speech:
+            return  # Nessun VLM: solo whisper + euristiche.
         if use_video:
             video_hf, video_mmproj, video_jinja = VIDEO_MODELS[video_model_label]
             SERVER.ensure(video_hf, mmproj_url=video_mmproj,
@@ -171,8 +175,8 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
         else:
             SERVER.ensure(MODELS[model_label], log=log_fn, **perf)
 
-    # Omni: serve il modello subito. Hybrid/video: prima whisper (GPU libera),
-    # poi llama-server per i frame — evita contendere VRAM/iGPU.
+    # Omni: serve il modello subito. Hybrid/video/speech: prima whisper
+    # (GPU libera), poi eventualmente llama-server per i frame.
     if not use_modular:
         progress(0.02, desc="Avvio modello...")
         try:
@@ -183,8 +187,12 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
             return
         yield partial()
     else:
-        log("Pipeline modulare: prima trascrizione whisper.cpp, "
-            "poi avvio del modello per i frame.")
+        if use_speech:
+            log("Pipeline solo parlato: euristiche pixel + whisper.cpp "
+                "(niente modello vision/omni).")
+        else:
+            log("Pipeline modulare: prima trascrizione whisper.cpp, "
+                "poi avvio del modello per i frame.")
         yield partial()
 
     # 3. Analizza in sequenza
@@ -223,11 +231,16 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
             analyze = video_analyzer_for(lang)
         elif use_hybrid:
             analyze = vision_analyzer_for(lang)
+        elif use_speech:
+            analyze = None
         else:
             analyze = analyzer_for(lang)
 
         if use_modular:
-            if use_video:
+            if use_speech:
+                log("Pipeline solo parlato: euristiche pixel → whisper.cpp "
+                    "(stutter/filler/tagli mancati).")
+            elif use_video:
                 log("Pipeline video nativa: euristiche → whisper.cpp → clip mp4 al modello.")
             else:
                 log("Pipeline ibrida: euristiche → whisper.cpp → modello vision-only.")
@@ -271,55 +284,61 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                     baseline_fn=detect_transcript_errors,
                 ))
             yield partial()
-            progress(0.05 + 0.25 * ((v_i + 0.5) / max(1, total)),
-                     desc=f"{name}: avvio modello vision...")
-            try:
-                ensure_llm()
-            except Exception as err:
-                log(f"ERRORE avvio modello: {err}")
-                aborted = True
-                break
-            yield partial()
-
-        # Finestre LLM in parallelo sugli slot llama-server.
-        # shutdown(wait=False, cancel_futures=True): un future in timeout
-        # non deve bloccare l'intera analisi in attesa del worker.
-        llm_pool = ThreadPoolExecutor(max_workers=SERVER.n_parallel)
-        try:
-            futures = [llm_pool.submit(analyze, win, log=log) for win in wins]
-            for w_i, fut in enumerate(futures):
-                if cancelled():
-                    log("Analisi annullata dall'utente: fermo le finestre in coda.")
-                    for pending in futures[w_i:]:
-                        pending.cancel()
+            if use_speech:
+                # Niente finestre VLM: passa direttamente a merge/filtro.
+                progress(0.85 + 0.1 * ((v_i + 0.5) / max(1, total)),
+                         desc=f"{name}: aggregazione...")
+            else:
+                progress(0.05 + 0.25 * ((v_i + 0.5) / max(1, total)),
+                         desc=f"{name}: avvio modello vision...")
+                try:
+                    ensure_llm()
+                except Exception as err:
+                    log(f"ERRORE avvio modello: {err}")
                     aborted = True
                     break
-                frac = (v_i + (w_i / max(1, len(wins)))) / total
-                progress(0.30 + 0.65 * frac,
-                         desc=f"{name}: finestra {w_i + 1}/{len(wins)}")
-                try:
-                    found = fut.result(timeout=WINDOW_FUTURE_TIMEOUT_SECONDS)
-                except FuturesTimeout:
-                    log(f"Finestra {w_i + 1}/{len(wins)}: timeout "
-                        f"({WINDOW_FUTURE_TIMEOUT_SECONDS:.0f}s); salto.")
-                    found = []
-                    # Annulla le finestre ancora in coda; il worker corrente
-                    # puo' continuare in background ma non blocchiamo lo shutdown.
-                    for pending in futures[w_i:]:
-                        pending.cancel()
-                except Exception as err:
-                    log(f"Finestra {w_i + 1}/{len(wins)}: errore ({err}); salto.")
-                    found = []
-                if found:
-                    for e in found:
-                        log(f"  {e.label} @ {fmt_time(e.start)}-{fmt_time(e.end)} "
-                            f"(conf {e.confidence:.2f}): {e.description}")
-                raw_errors.extend(found)
-                if w_i % 3 == 0:
-                    yield partial()
-        finally:
+                yield partial()
+
+        # Finestre LLM in parallelo sugli slot llama-server (skip se speech-only).
+        # shutdown(wait=False, cancel_futures=True): un future in timeout
+        # non deve bloccare l'intera analisi in attesa del worker.
+        if analyze is not None:
+            llm_pool = ThreadPoolExecutor(max_workers=SERVER.n_parallel)
+            try:
+                futures = [llm_pool.submit(analyze, win, log=log) for win in wins]
+                for w_i, fut in enumerate(futures):
+                    if cancelled():
+                        log("Analisi annullata dall'utente: fermo le finestre in coda.")
+                        for pending in futures[w_i:]:
+                            pending.cancel()
+                        aborted = True
+                        break
+                    frac = (v_i + (w_i / max(1, len(wins)))) / total
+                    progress(0.30 + 0.65 * frac,
+                             desc=f"{name}: finestra {w_i + 1}/{len(wins)}")
+                    try:
+                        found = fut.result(timeout=WINDOW_FUTURE_TIMEOUT_SECONDS)
+                    except FuturesTimeout:
+                        log(f"Finestra {w_i + 1}/{len(wins)}: timeout "
+                            f"({WINDOW_FUTURE_TIMEOUT_SECONDS:.0f}s); salto.")
+                        found = []
+                        for pending in futures[w_i:]:
+                            pending.cancel()
+                    except Exception as err:
+                        log(f"Finestra {w_i + 1}/{len(wins)}: errore ({err}); salto.")
+                        found = []
+                    if found:
+                        for e in found:
+                            log(f"  {e.label} @ {fmt_time(e.start)}-{fmt_time(e.end)} "
+                                f"(conf {e.confidence:.2f}): {e.description}")
+                    raw_errors.extend(found)
+                    if w_i % 3 == 0:
+                        yield partial()
+            finally:
+                stop_tracked_whisper(log=log)
+                llm_pool.shutdown(wait=False, cancel_futures=True)
+        else:
             stop_tracked_whisper(log=log)
-            llm_pool.shutdown(wait=False, cancel_futures=True)
 
         if aborted or cancelled():
             aborted = True
@@ -395,7 +414,8 @@ def _toggle_pipeline(pipeline_label):
     return (gr.update(visible=pipeline is Pipeline.OMNI),
             gr.update(visible=pipeline is Pipeline.HYBRID),
             gr.update(visible=pipeline is Pipeline.VIDEO),
-            gr.update(visible=pipeline in {Pipeline.HYBRID, Pipeline.VIDEO}))
+            gr.update(visible=pipeline in {
+                Pipeline.HYBRID, Pipeline.VIDEO, Pipeline.SPEECH}))
 
 
 def build_ui() -> gr.Blocks:
@@ -415,8 +435,11 @@ def build_ui() -> gr.Blocks:
                     placeholder="https://www.youtube.com/watch?v=...\nhttps://www.youtube.com/playlist?list=...",
                     lines=3)
                 gr.Markdown("### 🧠 Modello")
-                pipeline_in = gr.Radio(choices=PIPELINES, value=Pipeline.OMNI.value,
-                                       label="Pipeline")
+                pipeline_in = gr.Radio(choices=PIPELINES, value=Pipeline.SPEECH.value,
+                                       label="Pipeline",
+                                       info="Per errori di parlato (parole in più, filler) "
+                                            "usa «Solo parlato»; per schermi neri/freeze "
+                                            "aggiungi Vision o Omni.")
                 model_in = gr.Dropdown(choices=list(MODELS.keys()),
                                        value=DEFAULT_MODEL_LABEL,
                                        label="Modello omni (audio + visione)")

@@ -56,8 +56,9 @@ L'interfaccia web sara disponibile su **http://127.0.0.1:7860**. Al primo "Anali
 
 1. Carica uno o piu **video locali** (mp4, mkv, mov, ...) oppure incolla **URL YouTube** (uno per riga; funzionano anche playlist).
 2. Scegli la **pipeline**:
+   - **Solo parlato** (consigliata per parole in più / filler / stutter): whisper.cpp + euristiche, senza VLM
    - **Omni VLM**: un solo modello che vede e sente (audio + visione)
-   - **Vision + whisper.cpp** (consigliata sui PC leggeri): euristiche pixel + modello vision-only per i frame + whisper.cpp per l'audio
+   - **Vision + whisper.cpp**: euristiche pixel + modello vision-only per i frame + whisper.cpp per l'audio
    - **Video nativo + whisper.cpp** (sperimentale): la clip mp4 di ogni finestra viene passata direttamente al modello, che la campiona a 4 fps (~12x piu frame della pipeline ibrida)
 3. Imposta la **lingua del video** (Italiano / English): guida whisper.cpp, i prompt del modello e le descrizioni nel report.
 4. Premi **Analizza** e consulta gli errori nella **tabella** e nella **galleria di screenshot**.

@@ -38,9 +38,23 @@ YouTube blocca gli IP cloud → corpus sintetico in `corpus/` che riproduce gli 
 3. Modelli whisper più grandi a **temp 0** “correggono” gli stutter → peggiorano il recall per questo task.
 4. Download YouTube da cloud: bot-check, serve run locale sul file reale.
 
-## Configurazione scelta in produzione
+## Whisper model size (importante)
 
-`detect_speech_edit_errors` con word + n-gram + filler + text fallback + baseline segmenti, e whisper con `-mc 0 -sow -tp 0.8` + prompt anti-smoothing.
+Per **trovare stutter**, i modelli più grandi non sono sempre meglio: Large v3 Turbo
+a temp 0.8 sul corpus sintetico collassa «anche anche» / «fornisce fornisce» e
+scende a F1 ~0.57. **Small/Medium** con temp 0.8 restano preferibili per questo task.
+
+| Modello whisper | Temp | F1 tipico (corpus GT) |
+|-----------------|------|------------------------|
+| Small Q8 | 0.8 | **1.0** |
+| Medium Q8 | 0.8 | ~0.67–0.75 |
+| Large v3 Turbo Q5 | 0.8 | ~0.57 |
+
+## Pipeline «Solo parlato»
+
+Nuova opzione UI: whisper + euristiche pixel, **senza** VLM. Ideale quando gli
+errori sono quasi tutti di parlato (come il video 3.5). Molto più veloce.
+
 
 Temperatura: su **medium**, `0.0` collassa «potrebbe potrebbe»; `0.8` lo preserva (e spesso anche `ehm`). Default app: `0.8` (override `WHISPER_TEMPERATURE`).
 
