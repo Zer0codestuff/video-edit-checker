@@ -25,6 +25,7 @@ MODELS = [
     "Small Q8 (~250 MB, piu veloce)",
     "Medium Q8 (default, ~785 MB)",
     "Large v3 Turbo Q5 (~550 MB)",
+    "Base Q8 (~80 MB, leggero)",
 ]
 TEMPS = ["0.0", "0.8"]  # 0.6 e' una valle: collassa stutter senza i benefici di 0.8
 
@@ -38,6 +39,8 @@ def run_once(model: str, temp: str) -> dict:
         tag = "large"
     elif "Medium" in model:
         tag = "medium"
+    elif "Base" in model:
+        tag = "base"
     else:
         tag = "small"
     cache = OUT / f"whisper_{tag}"

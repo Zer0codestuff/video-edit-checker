@@ -221,6 +221,8 @@ def main() -> None:
         model_tag = "large"
     elif "medium" in low:
         model_tag = "medium"
+    elif "base" in low:
+        model_tag = "base"
     else:
         model_tag = "small"
     clips = sorted(CORPUS.glob("*.wav"))
