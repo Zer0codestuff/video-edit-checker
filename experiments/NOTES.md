@@ -46,13 +46,15 @@ scende a F1 ~0.57. **Small** con temp 0.8 è il migliore per questo task.
 
 | Modello whisper | Temp | F1 tipico (corpus GT) | Overnight avg (n run) |
 |-----------------|------|------------------------|------------------------|
-| Small Q8 | 0.8 | **1.0** | **0.98** (n=5) |
-| Small Q8 | 0.6 | ~1.0 | **0.98** (n=6) |
-| Small Q8 | 0.0 | ~0.95 | 0.96 (n=8) |
-| Medium Q8 | 0.8 | ~0.67–0.82 | 0.75 (n=5) |
-| Medium Q8 | 0.0 | ~0.67 | 0.68 (n=7) |
-| Large v3 Turbo Q5 | 0.8 | ~0.89 | 0.89 (n=2) |
-| Large v3 Turbo Q5 | 0.6 | ~0.46 | 0.46 (n=2) |
+| Small Q8 | 0.8 | **1.0** | **0.98** (n=6) |
+| Small Q8 | 0.6 | ~1.0 | **0.98** (n=7) |
+| Small Q8 | 0.0 | ~0.95 | 0.95 (n=9) |
+| Medium Q8 | 0.8 | ~0.67–0.82 | 0.76 (n=6) |
+| Medium Q8 | 0.0 | ~0.67 | 0.69 (n=8) |
+| Medium Q8 | 0.6 | ~0.46 | **0.46** (n=7) — peggiore |
+| Large v3 Turbo Q5 | 0.8 | ~0.89 | 0.89 (n=3) |
+| Large v3 Turbo Q5 | 0.0 | ~0.82 | 0.82 (n=3) |
+| Large v3 Turbo Q5 | 0.6 | ~0.46 | 0.46 (n=3) |
 
 ## Ensemble multi-temperatura
 

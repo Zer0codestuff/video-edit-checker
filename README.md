@@ -121,10 +121,11 @@ La clip mp4 di ogni finestra viene inviata a `llama-server` come `input_video`: 
 
 1. **Input**: video locali o scaricati da YouTube via yt-dlp (max 480p).
 2. **Frame**: estratti in un unico passaggio ffmpeg (1 ogni 3 secondi, max 448px), condivisi tra finestre da ~20 secondi con 2 secondi di overlap.
-3. **Euristiche pixel** (pipeline ibrida): luminanza per gli schermi neri, confronto pixel per i frame congelati.
-4. **Inferenza**: frame (+ audio per la pipeline omni) inviati a `llama-server` via API OpenAI-compatible; risposta JSON strutturata forzata da schema.
-5. **Verifica**: ogni errore visivo segnalato dal modello viene ricontrollato sui pixel reali; schermi neri sotto i 5 secondi vengono scartati.
-6. **Aggregazione**: merge degli errori tra finestre adiacenti, filtro per confidence, tabella + screenshot + report JSON/CSV.
+3. **Euristiche pixel** (pipeline ibrida/speech): luminanza per gli schermi neri, confronto pixel per i frame congelati.
+4. **Parlato (whisper.cpp)**: trascrizione word-level; rileva stutter («fornisce fornisce»), n-gram ripetuti, filler («ehh»/«ehm») e frasi di ripresa. Default temp 0.8; ensemble 0.0+0.8 opzionale.
+5. **Inferenza VLM** (omni/hybrid/video): frame (+ audio per omni) a `llama-server`; JSON strutturato. Saltata nella pipeline «Solo parlato».
+6. **Verifica**: ogni errore visivo segnalato dal modello viene ricontrollato sui pixel reali; schermi neri sotto i 5 secondi vengono scartati.
+7. **Aggregazione**: merge degli errori tra finestre adiacenti (senza fondere citazioni speech diverse), filtro per confidence, tabella + screenshot + report JSON/CSV.
 
 ## Struttura del progetto
 
@@ -145,6 +146,8 @@ video-edit-checker/
 │   ├── video_analyzer.py   # Pipeline video nativa: clip mp4
 │   ├── heuristics.py       # Euristiche pixel + verifica anti-allucinazione
 │   ├── whisper_cpp.py      # Trascrizione e errori audio (whisper.cpp)
+│   ├── speech_edits.py     # Stutter/filler/parole ripetute (word-level)
+│   ├── speech_ensemble.py  # Ensemble multi-temperatura (opzionale)
 │   ├── binaries.py         # Risoluzione binari da tools/ e PATH
 │   ├── ingest.py           # Input video: file locali e YouTube (yt-dlp)
 │   ├── llama_server.py     # Gestione processo llama-server
