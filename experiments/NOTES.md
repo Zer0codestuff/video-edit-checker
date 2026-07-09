@@ -49,7 +49,8 @@ scende a F1 ~0.57. **Small** con temp 0.8 è il migliore per questo task.
 | Small Q8 | 0.8 | **1.0** | **0.98** (n=6) |
 | Small Q8 | 0.6 | ~1.0 | **0.98** (n=7) |
 | Small Q8 | 0.0 | ~0.95 | 0.95 (n=9) |
-| Base Q8 | 0.8 | **0.75** | (in corso) |
+| Base Q8 | 0.8 | **0.75** | 0.75 (n=1) — perde anche/filler |
+| Base Q8 | 0.0 | ~0.82 | 0.82 (n=1) |
 | Medium Q8 | 0.8 | ~0.67–0.82 | 0.76 (n=6) |
 | Medium Q8 | 0.0 | ~0.67 | 0.69 (n=8) |
 | Medium Q8 | 0.6 | ~0.46 | **0.46** (n=7) — peggiore |
