@@ -6,6 +6,7 @@ import atexit
 import os
 import subprocess
 import time
+from pathlib import Path
 
 import requests
 
@@ -75,6 +76,42 @@ BATCH_PRESETS: dict[str, tuple[int, int]] = {
 }
 DEFAULT_BATCH_PRESET = "Conservativo (iGPU / poca VRAM)"
 
+_ROOT = Path(__file__).resolve().parent.parent
+_LOG_PATH = _ROOT / "runs" / "llama-server.log"
+
+
+def _process_name(pid: str) -> str:
+    """Nome del processo per un PID, stringa vuota se non disponibile."""
+    try:
+        if os.name == "nt":
+            res = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, timeout=5,
+            )
+            line = (res.stdout or "").strip().splitlines()
+            if line and line[0].startswith('"'):
+                # "llama-server.exe","1234","..."
+                return line[0].split(",")[0].strip('"').lower()
+        else:
+            res = subprocess.run(
+                ["ps", "-p", pid, "-o", "comm="],
+                capture_output=True, text=True, timeout=5,
+            )
+            return (res.stdout or "").strip().lower()
+    except Exception:
+        return ""
+    return ""
+
+
+def _tail_log(path: Path, n: int = 40) -> str:
+    if not path.exists():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(lines[-n:])
+    except Exception:
+        return ""
+
 
 class LlamaServer:
     """Avvia e gestisce una singola istanza di llama-server.
@@ -87,6 +124,7 @@ class LlamaServer:
         self.proc: subprocess.Popen | None = None
         self.current_key: str | None = None
         self.n_parallel: int = N_PARALLEL  # slot effettivi dell'istanza corrente
+        self._log_fh = None
         atexit.register(self.stop)
 
     def is_running(self) -> bool:
@@ -104,9 +142,18 @@ class LlamaServer:
                     pass
             self.proc = None
             self.current_key = None
+        if self._log_fh is not None:
+            try:
+                self._log_fh.close()
+            except Exception:
+                pass
+            self._log_fh = None
 
     def _kill_port_holders(self, log=print) -> None:
-        """Uccide eventuali processi esterni che tengono la porta PORT."""
+        """Uccide eventuali processi llama-server che tengono la porta PORT.
+
+        Non tocca altri processi sulla stessa porta (es. tool di debug).
+        """
         try:
             pids: list[str] = []
             if os.name == "nt":
@@ -126,14 +173,21 @@ class LlamaServer:
                     capture_output=True, text=True, timeout=5,
                 )
                 pids = [p for p in res.stdout.split() if p]
+            killed = False
             for pid in set(pids):
-                log(f"Killo processo {pid} che tiene la porta {PORT}.")
+                name = _process_name(pid)
+                if "llama-server" not in name and "llama_server" not in name:
+                    log(f"Porta {PORT} occupata da '{name or '?'}' (PID {pid}): "
+                        "non la chiudo automaticamente.")
+                    continue
+                log(f"Killo llama-server {pid} che tiene la porta {PORT}.")
                 if os.name == "nt":
                     subprocess.run(["taskkill", "/PID", pid, "/F"],
                                    capture_output=True, timeout=10)
                 else:
                     subprocess.run(["kill", pid], timeout=5)
-            if pids:
+                killed = True
+            if killed:
                 time.sleep(2)
         except Exception:
             pass
@@ -163,8 +217,6 @@ class LlamaServer:
             return
         self.stop()
         self._kill_port_holders(log=log)
-        # Flag conservativi per Mac 8 GB: contesto ridotto, batch piccoli,
-        # encoder multimodale su CPU (evita OOM Metal), thinking disabilitato.
         # Slot paralleli per tenere piena la GPU tra una finestra e l'altra;
         # il contesto totale scala con gli slot. L'encoder mmproj resta sulla
         # GPU: su CPU satura ~9 core e lascia la GPU ferma durante la
@@ -190,11 +242,24 @@ class LlamaServer:
         if hf_model in MTP_MODELS:
             cmd += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "4"]
             log("MTP speculative decoding attivo per questo modello.")
+        env = os.environ.copy()
+        hf_token = env.get("HF_TOKEN") or env.get("HUGGING_FACE_HUB_TOKEN")
+        if hf_token:
+            env["HF_TOKEN"] = hf_token
+            log("HF_TOKEN rilevato: usato per modelli Hugging Face gated.")
+        _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self._log_fh = open(_LOG_PATH, "a", encoding="utf-8", errors="replace")
+        self._log_fh.write(
+            f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"avvio {hf_model} =====\n")
+        self._log_fh.flush()
         log(f"Avvio llama-server con {hf_model} (il primo avvio scarica il modello)...")
+        log(f"Log llama-server: {_LOG_PATH}")
         self.proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=self._log_fh,
+            stderr=subprocess.STDOUT,
+            env=env,
         )
         self.current_key = key
         self._wait_ready(log=log)
@@ -205,9 +270,12 @@ class LlamaServer:
         last_note = 0.0
         while time.time() < deadline:
             if self.proc is not None and self.proc.poll() is not None:
+                tail = _tail_log(_LOG_PATH)
+                hint = f"\nUltime righe di {_LOG_PATH}:\n{tail}" if tail else ""
                 raise RuntimeError(
                     "llama-server è terminato durante l'avvio. "
                     "Controlla RAM disponibile o riprova con il modello più leggero."
+                    + hint
                 )
             try:
                 r = requests.get(f"{HOST}/health", timeout=1)
@@ -220,7 +288,9 @@ class LlamaServer:
                 log("In attesa del modello (download/caricamento in corso)...")
                 last_note = time.time()
             time.sleep(1)
-        raise RuntimeError("Timeout in attesa di llama-server.")
+        tail = _tail_log(_LOG_PATH)
+        hint = f"\nUltime righe di {_LOG_PATH}:\n{tail}" if tail else ""
+        raise RuntimeError("Timeout in attesa di llama-server." + hint)
 
 
 SERVER = LlamaServer()

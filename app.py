@@ -10,14 +10,16 @@ from __future__ import annotations
 
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 import gradio as gr
 
-from core.analyzer import EditError, analyze_window
+from core.analyzer import analyze_window
 from core.binaries import has_whisper, missing_required, setup_path
+from core.constants import WINDOW_FUTURE_TIMEOUT_SECONDS
 from core.heuristics import detect_visual_heuristics, verify_visual_errors
 from core.ingest import collect_local_files, download_youtube
 from core.llama_server import (BATCH_PRESETS, CTX_PER_SLOT,
@@ -25,6 +27,7 @@ from core.llama_server import (BATCH_PRESETS, CTX_PER_SLOT,
                                DEFAULT_VIDEO_MODEL_LABEL,
                                DEFAULT_VISION_MODEL_LABEL, MODELS, N_PARALLEL,
                                SERVER, VIDEO_MODELS, VISION_MODELS)
+from core.models import EditError
 from core.report import (batch_summary_md, export_batch, export_csv,
                          export_json, extract_thumbnail, filter_errors,
                          fmt_time, merge_errors)
@@ -35,11 +38,15 @@ from core.whisper_cpp import (detect_transcript_errors, find_default_model,
 from core.windows import make_windows, probe_duration
 
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
-PIPELINES = [
-    "Omni VLM (audio + visione, singolo modello)",
-    "Vision + whisper.cpp (leggero, modulare)",
-    "Video nativo + whisper.cpp (clip mp4 al modello, sperimentale)",
-]
+
+
+class Pipeline(str, Enum):
+    OMNI = "Omni VLM (audio + visione, singolo modello)"
+    HYBRID = "Vision + whisper.cpp (leggero, modulare)"
+    VIDEO = "Video nativo + whisper.cpp (clip mp4 al modello, sperimentale)"
+
+
+PIPELINES = [p.value for p in Pipeline]
 
 CSS = """
 .gradio-container {max-width: 1600px !important}
@@ -52,6 +59,7 @@ footer {display: none !important}
 
 @dataclass
 class VideoResult:
+    key: str
     name: str
     video_path: Path
     errors: list[EditError] = field(default_factory=list)
@@ -60,7 +68,13 @@ class VideoResult:
     csv_path: Path | None = None
 
 
+# Chiave = id univoco della run corrente (es. "00_short_25s"), non solo lo stem.
 RESULTS: dict[str, VideoResult] = {}
+
+
+def _result_key(index: int, stem: str) -> str:
+    safe = re.sub(r'[<>:"/\\|?*]', "_", stem)[:40].strip(" .") or "video"
+    return f"{index:02d}_{safe}"
 
 
 def _table_rows(res: VideoResult) -> list[list]:
@@ -70,11 +84,19 @@ def _table_rows(res: VideoResult) -> list[list]:
     ]
 
 
+def _pipeline_from_label(label: str) -> Pipeline:
+    try:
+        return Pipeline(label)
+    except ValueError:
+        return Pipeline.OMNI
+
+
 def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_label,
                  video_model_label, whisper_model_path, min_confidence,
                  n_parallel, batch_preset, ctx_per_slot,
                  progress=gr.Progress()):
     logs: list[str] = []
+    RESULTS.clear()
 
     def log(msg: str):
         logs.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
@@ -103,8 +125,9 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
     yield partial()
 
     # 2. Avvia il modello richiesto
-    use_hybrid = pipeline_label == PIPELINES[1]
-    use_video = pipeline_label == PIPELINES[2]
+    pipeline = _pipeline_from_label(pipeline_label)
+    use_hybrid = pipeline is Pipeline.HYBRID
+    use_video = pipeline is Pipeline.VIDEO
     progress(0.02, desc="Avvio modello...")
     perf = dict(n_parallel=int(n_parallel), ctx_per_slot=int(ctx_per_slot),
                 batch_preset=batch_preset)
@@ -130,6 +153,7 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
     total = len(videos)
     for v_i, video in enumerate(videos):
         name = video.stem
+        key = _result_key(v_i, name)
         log(f"--- Analizzo '{name}' ({v_i + 1}/{total}) ---")
         # Nome cartella sicuro per Windows: niente caratteri riservati e
         # niente spazi/punti finali (WinError 3 in caso contrario).
@@ -156,8 +180,11 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
             analyze = analyze_window
         # Tante richieste LLM in volo quanti sono gli slot llama-server +
         # whisper su CPU in parallelo, per non lasciare ferma la GPU.
-        with ThreadPoolExecutor(max_workers=SERVER.n_parallel) as llm_pool, \
-                ThreadPoolExecutor(max_workers=1) as bg_pool:
+        # shutdown(wait=False, cancel_futures=True): un future in timeout
+        # non deve bloccare l'intera analisi in attesa del worker.
+        llm_pool = ThreadPoolExecutor(max_workers=SERVER.n_parallel)
+        bg_pool = ThreadPoolExecutor(max_workers=1)
+        try:
             transcript_future = None
             if use_modular:
                 if use_video:
@@ -180,7 +207,19 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                 frac = (v_i + (w_i / max(1, len(wins)))) / total
                 progress(0.05 + 0.9 * frac,
                          desc=f"{name}: finestra {w_i + 1}/{len(wins)}")
-                found = fut.result()
+                try:
+                    found = fut.result(timeout=WINDOW_FUTURE_TIMEOUT_SECONDS)
+                except FuturesTimeout:
+                    log(f"Finestra {w_i + 1}/{len(wins)}: timeout "
+                        f"({WINDOW_FUTURE_TIMEOUT_SECONDS:.0f}s); salto.")
+                    found = []
+                    # Annulla le finestre ancora in coda; il worker corrente
+                    # puo' continuare in background ma non blocchiamo lo shutdown.
+                    for pending in futures[w_i:]:
+                        pending.cancel()
+                except Exception as err:
+                    log(f"Finestra {w_i + 1}/{len(wins)}: errore ({err}); salto.")
+                    found = []
                 if found:
                     for e in found:
                         log(f"  {e.label} @ {fmt_time(e.start)}-{fmt_time(e.end)} "
@@ -190,15 +229,28 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                     yield partial()
 
             if transcript_future is not None:
-                segments = transcript_future.result()
+                try:
+                    segments = transcript_future.result(
+                        timeout=WINDOW_FUTURE_TIMEOUT_SECONDS)
+                except FuturesTimeout:
+                    log("Trascrizione whisper: timeout; salto analisi audio.")
+                    transcript_future.cancel()
+                    segments = []
+                except Exception as err:
+                    log(f"Trascrizione whisper fallita ({err}); salto analisi audio.")
+                    segments = []
                 if segments:
-                    raw_errors.extend(detect_transcript_errors(segments, probe_duration(video)))
+                    raw_errors.extend(detect_transcript_errors(
+                        segments, probe_duration(video)))
+        finally:
+            llm_pool.shutdown(wait=False, cancel_futures=True)
+            bg_pool.shutdown(wait=False, cancel_futures=True)
 
         raw_errors = verify_visual_errors(raw_errors, wins, log=log)
         errors = filter_errors(merge_errors(raw_errors), float(min_confidence))
         log(f"'{name}': {len(errors)} errori dopo merge e filtro (soglia {min_confidence}).")
 
-        res = VideoResult(name=name, video_path=video, errors=errors)
+        res = VideoResult(key=key, name=name, video_path=video, errors=errors)
         for i, e in enumerate(errors):
             thumb = extract_thumbnail(video, (e.start + e.end) / 2,
                                       vdir / "thumbs" / f"err_{i:02d}.jpg")
@@ -207,11 +259,13 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                     (str(thumb), f"{e.label} @ {fmt_time(e.start)} — {e.description}"))
         res.json_path = export_json(name, errors, vdir / f"{name}_report.json")
         res.csv_path = export_csv(name, errors, vdir / f"{name}_report.csv")
-        RESULTS[name] = res
-        run_results[name] = errors
+        RESULTS[key] = res
+        # Stessa chiave univoca di RESULTS: evita collisioni su stem duplicati
+        # nel riepilogo playlist / report combinato.
+        run_results[key] = errors
 
         yield (logs_text(),
-               gr.update(choices=list(RESULTS.keys()), value=name),
+               gr.update(choices=list(RESULTS.keys()), value=key),
                str(res.video_path), _table_rows(res), res.thumbnails,
                str(res.json_path), str(res.csv_path),
                batch_summary_md(run_results), gr.update(), gr.update())
@@ -231,7 +285,7 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
     last = list(RESULTS.values())[-1] if RESULTS else None
     yield (logs_text(),
            gr.update(choices=list(RESULTS.keys()),
-                     value=last.name if last else None),
+                     value=last.key if last else None),
            str(last.video_path) if last else None,
            _table_rows(last) if last else [],
            last.thumbnails if last else [],
@@ -253,13 +307,11 @@ def select_video(name):
 
 def _toggle_pipeline(pipeline_label):
     """Mostra solo i controlli rilevanti per la pipeline scelta."""
-    omni = pipeline_label == PIPELINES[0]
-    hybrid = pipeline_label == PIPELINES[1]
-    native = pipeline_label == PIPELINES[2]
-    return (gr.update(visible=omni),          # modello omni
-            gr.update(visible=hybrid),        # modello vision
-            gr.update(visible=native),        # modello video nativo
-            gr.update(visible=hybrid or native))  # path whisper
+    pipeline = _pipeline_from_label(pipeline_label)
+    return (gr.update(visible=pipeline is Pipeline.OMNI),
+            gr.update(visible=pipeline is Pipeline.HYBRID),
+            gr.update(visible=pipeline is Pipeline.VIDEO),
+            gr.update(visible=pipeline in {Pipeline.HYBRID, Pipeline.VIDEO}))
 
 
 def build_ui() -> gr.Blocks:
@@ -280,7 +332,7 @@ def build_ui() -> gr.Blocks:
                     placeholder="https://www.youtube.com/watch?v=...\nhttps://www.youtube.com/playlist?list=...",
                     lines=3)
                 gr.Markdown("### 🧠 Modello")
-                pipeline_in = gr.Radio(choices=PIPELINES, value=PIPELINES[0],
+                pipeline_in = gr.Radio(choices=PIPELINES, value=Pipeline.OMNI.value,
                                        label="Pipeline")
                 model_in = gr.Dropdown(choices=list(MODELS.keys()),
                                        value=DEFAULT_MODEL_LABEL,

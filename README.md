@@ -120,8 +120,13 @@ video-edit-checker/
 ├── app.py                  # UI Gradio
 ├── requirements.txt
 ├── core/
-│   ├── analyzer.py         # Pipeline omni: frame+audio a llama-server
+│   ├── models.py           # EditError, ERROR_TYPES, RESPONSE_SCHEMA
+│   ├── constants.py        # Costanti di dominio condivise
+│   ├── llm_client.py       # HTTP a llama-server, b64, extract_json, retry
+│   ├── parse_errors.py     # Policy timestamp/tipi per pipeline
+│   ├── analyzer.py         # Pipeline omni: frame+audio
 │   ├── vision_analyzer.py  # Pipeline ibrida: solo frame
+│   ├── video_analyzer.py   # Pipeline video nativa: clip mp4
 │   ├── heuristics.py       # Euristiche pixel + verifica anti-allucinazione
 │   ├── whisper_cpp.py      # Trascrizione e errori audio (whisper.cpp)
 │   ├── binaries.py         # Risoluzione binari da tools/ e PATH
@@ -130,11 +135,17 @@ video-edit-checker/
 │   ├── report.py           # Merge errori, thumbnail, export JSON/CSV
 │   └── windows.py          # Finestre temporali, estrazione frame+audio
 ├── prompts/
-│   └── editing_errors.txt  # Prompt per il modello omni
+│   ├── editing_errors.txt  # Prompt omni
+│   ├── vision_errors.txt   # Prompt vision-only
+│   └── video_errors.txt    # Prompt video nativo
+├── tests/                  # Unit test (python -m unittest discover)
 ├── tools/                  # Binari scaricati da install.py (generato)
 ├── downloads/              # Video scaricati da YouTube (generato)
-└── runs/                   # Risultati delle analisi (generato)
+└── runs/                   # Risultati delle analisi + llama-server.log
 ```
+
+Per i modelli Hugging Face gated, imposta `HF_TOKEN` (o `HUGGING_FACE_HUB_TOKEN`) prima di avviare l'app.
+
 
 ## Requisiti minimi
 

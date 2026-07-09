@@ -97,12 +97,6 @@ def _llama_supports_mtp(exe: str | Path) -> bool:
 def download(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     log(f"Scarico {url}")
-
-    def hook(blocks: int, block_size: int, total: int) -> None:
-        if total > 0:
-            pct = min(100, blocks * block_size * 100 // total)
-            print(f"\r[install]   ...{pct}%", end="", flush=True)
-
     req = urllib.request.Request(url, headers={"User-Agent": "video-edit-checker-installer"})
     with urllib.request.urlopen(req) as resp, open(dest, "wb") as f:
         total = int(resp.headers.get("Content-Length") or 0)
@@ -118,15 +112,53 @@ def download(url: str, dest: Path) -> None:
     print(flush=True)
 
 
+def _is_within_directory(base: Path, target: Path) -> bool:
+    try:
+        target.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _safe_extract_zip(archive: Path, dest: Path) -> None:
+    with zipfile.ZipFile(archive) as z:
+        for info in z.infolist():
+            # Blocca path traversal (Zip Slip) e link assoluti.
+            member = Path(info.filename)
+            if member.is_absolute() or ".." in member.parts:
+                die(f"Archivio sospetto (path traversal): {info.filename}")
+            target = dest / member
+            if not _is_within_directory(dest, target):
+                die(f"Archivio sospetto (path fuori destinazione): {info.filename}")
+        z.extractall(dest)
+
+
+def _safe_extract_tar(archive: Path, dest: Path) -> None:
+    with tarfile.open(archive) as t:
+        for member in t.getmembers():
+            name = member.name
+            path = Path(name)
+            if path.is_absolute() or ".." in path.parts:
+                die(f"Archivio sospetto (path traversal): {name}")
+            if member.issym() or member.islnk():
+                die(f"Archivio sospetto (symlink/hardlink): {name}")
+            target = dest / path
+            if not _is_within_directory(dest, target):
+                die(f"Archivio sospetto (path fuori destinazione): {name}")
+        # filter="data" (Python 3.12+) rifiuta path pericolosi; fallback manuale sopra.
+        try:
+            t.extractall(dest, filter="data")
+        except TypeError:
+            t.extractall(dest)
+
+
 def extract(archive: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     log(f"Estraggo {archive.name} in {dest.relative_to(ROOT)}/")
     if archive.suffix == ".zip":
-        with zipfile.ZipFile(archive) as z:
-            z.extractall(dest)
+        _safe_extract_zip(archive, dest)
     else:
-        with tarfile.open(archive) as t:
-            t.extractall(dest)
+        _safe_extract_tar(archive, dest)
     archive.unlink(missing_ok=True)
 
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from core.analyzer import EditError
+from core.models import EditError
 
 CACHE_DIR = Path.home() / ".cache" / "whisper.cpp"
 DEFAULT_MODEL_NAME = "ggml-large-v3-turbo-q5_0.bin"

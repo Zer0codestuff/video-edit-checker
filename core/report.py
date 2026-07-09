@@ -7,10 +7,10 @@ import json
 import subprocess
 from pathlib import Path
 
-from core.analyzer import ERROR_TYPES, EditError
+from core.constants import BLACK_MIN_DURATION_SECONDS
+from core.models import ERROR_TYPES, EditError
 
 MERGE_GAP_SECONDS = 3.0
-BLACK_MIN_DURATION_SECONDS = 5.0
 
 
 def merge_errors(errors: list[EditError]) -> list[EditError]:
@@ -50,7 +50,9 @@ def extract_thumbnail(video: Path, t: float, out_path: Path) -> Path | None:
 
 
 def fmt_time(seconds: float) -> str:
-    m, s = divmod(int(round(seconds)), 60)
+    """Formatta secondi come M:SS o H:MM:SS (arrotondata al secondo)."""
+    total = max(0, int(round(seconds)))
+    m, s = divmod(total, 60)
     h, m = divmod(m, 60)
     return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:d}:{s:02d}"
 

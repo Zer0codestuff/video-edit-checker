@@ -6,13 +6,12 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageStat
 
-from core.analyzer import EditError
+from core.constants import BLACK_MIN_DURATION_SECONDS
+from core.models import EditError
 from core.windows import FRAME_EVERY_SECONDS, Window
 
 BLACK_MEAN_THRESHOLD = 10.0
 BLACK_STD_THRESHOLD = 8.0
-# Sotto i 5 secondi uno schermo nero e' quasi sempre una transizione voluta.
-BLACK_MIN_DURATION_SECONDS = 5.0
 # Un vero freeze produce frame identici (diff ~0.1-0.3 da rumore JPEG).
 # Soglie piu' alte scambiano slide statiche per frame congelati.
 FREEZE_DIFF_THRESHOLD = 0.6
@@ -149,8 +148,11 @@ def verify_visual_errors(errors: list[EditError], windows: list[Window],
                     if _diff_mean(a, b) <= FREEZE_DIFF_THRESHOLD:
                         ok = True
                         break
-        except Exception:
-            ok = True  # in dubbio, non scartare
+        except Exception as exc:
+            # Fail-safe: senza verifica pixel affidabile scarta (evita FP).
+            log(f"Verifica pixel fallita per {err.type} @ {err.start:.1f}s "
+                f"({exc}); scarto.")
+            ok = False
         if ok:
             kept.append(err)
         else:
