@@ -61,6 +61,10 @@ scende a F1 ~0.57. **Small** con temp 0.8 è il migliore per questo task.
 Su **Medium**, una sola passata a temp 0.8 perde «anche anche» (F1 0.89).
 Due passate (0.0 + 0.8) unite → **F1 1.0** (2× tempo whisper).
 
+**Perché 0.0+0.8 e non 0.6:** temp `0.6` e' una valle — collassa stutter
+(come un modello “pulito”) senza recuperare «potrebbe» (che compare a 0.8).
+`0.0` e `0.8` catturano sottoinsiemi diversi → l'unione li copre tutti.
+
 Checkbox UI: «Ensemble whisper (temp 0.0 + 0.8)». Consigliato solo se usi
 Medium/Large; con Small di solito non serve.
 

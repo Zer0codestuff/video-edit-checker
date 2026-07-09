@@ -26,7 +26,7 @@ MODELS = [
     "Medium Q8 (default, ~785 MB)",
     "Large v3 Turbo Q5 (~550 MB)",
 ]
-TEMPS = ["0.0", "0.6", "0.8"]
+TEMPS = ["0.0", "0.8"]  # 0.6 e' una valle: collassa stutter senza i benefici di 0.8
 
 
 def run_once(model: str, temp: str) -> dict:
