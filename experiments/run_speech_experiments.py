@@ -303,7 +303,16 @@ def main() -> None:
     out_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nSalvato {out_path}")
 
-    ranked = sorted(summary.items(), key=lambda kv: (-kv[1]["f1"], -kv[1]["precision"]))
+    # A parita' di F1 preferisci le config piu' complete (usate in produzione).
+    prefer = {
+        "full_plus_baseline": 3,
+        "full_wordlevel": 2,
+        "no_text_fallback": 1,
+    }
+    ranked = sorted(
+        summary.items(),
+        key=lambda kv: (-kv[1]["f1"], -kv[1]["precision"], -prefer.get(kv[0], 0)),
+    )
     print("\nRanking F1:")
     for name, s in ranked:
         print(f"  {s['f1']:.3f}  P={s['precision']:.3f} R={s['recall']:.3f}  {name}")

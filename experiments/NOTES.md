@@ -21,6 +21,7 @@ YouTube blocca gli IP cloud → corpus sintetico in `corpus/` che riproduce gli 
 | n-gram only | alta | bassa | ~0.3 | Cattura «a un soggetto» |
 | fillers only | — | ~0 su TTS | 0–0.2 | Dipende da ASR (ehh→ehm/m/e) |
 | **full word-level** | **~0.86–1.0** | **~0.6–0.8** | **~0.7–0.89** | Miglior tradeoff |
+| **full + merge fix + emm** | **1.0** | **1.0** | **1.0** | Dopo fix merge speech + filler `emm` |
 | text fallback only | alta | buona | fino a 0.78 | Utile se i token BPE sono rumorosi |
 
 ## Cosa funziona

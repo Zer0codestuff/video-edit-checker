@@ -11,13 +11,37 @@ from core.constants import BLACK_MIN_DURATION_SECONDS
 from core.models import ERROR_TYPES, EditError
 
 MERGE_GAP_SECONDS = 3.0
+# Errori di parlato distinti (parole diverse) non vanno fusi solo perche'
+# cadono entro MERGE_GAP: altrimenti «soggetto» + «fornisce» a 2s di distanza
+# diventano un solo evento e se ne perde uno nel report.
+_SPEECH_TYPES = frozenset({"repeated_phrase", "missed_cut", "audio_glitch"})
+
+
+def _speech_same_event(a: EditError, b: EditError) -> bool:
+    """True se due errori speech sembrano lo stesso evento (stessa citazione)."""
+    import re
+    qa = re.findall(r"[«\"]([^»\"]+)[»\"]", a.description)
+    qb = re.findall(r"[«\"]([^»\"]+)[»\"]", b.description)
+    if qa and qb:
+        return qa[0].strip().lower() == qb[0].strip().lower()
+    # Senza citazione: fondi solo se le description condividono molte parole.
+    wa = set(re.findall(r"[a-zàèéìòù]+", a.description.lower()))
+    wb = set(re.findall(r"[a-zàèéìòù]+", b.description.lower()))
+    if not wa or not wb:
+        return True
+    return len(wa & wb) / max(1, len(wa | wb)) >= 0.5
 
 
 def merge_errors(errors: list[EditError]) -> list[EditError]:
     """Unisce errori dello stesso tipo vicini/sovrapposti (da finestre overlappanti)."""
     merged: list[EditError] = []
     for err in sorted(errors, key=lambda e: (e.type, e.start)):
-        if merged and merged[-1].type == err.type and err.start <= merged[-1].end + MERGE_GAP_SECONDS:
+        if (
+            merged
+            and merged[-1].type == err.type
+            and err.start <= merged[-1].end + MERGE_GAP_SECONDS
+            and (err.type not in _SPEECH_TYPES or _speech_same_event(merged[-1], err))
+        ):
             prev = merged[-1]
             prev.end = max(prev.end, err.end)
             prev.confidence = max(prev.confidence, err.confidence)

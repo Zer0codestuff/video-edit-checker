@@ -22,12 +22,28 @@ class MergeFilterTests(unittest.TestCase):
         self.assertEqual(merged[0].confidence, 0.9)
         self.assertIn("piu lunga", merged[0].description)
 
-    def test_merge_does_not_mutate_input_identity_for_new(self):
-        a = EditError("missed_cut", 1, 2, "x", 0.6)
-        b = EditError("other", 10, 11, "y", 0.6)
-        merged = merge_errors([a, b])
+    def test_merge_does_not_fuse_distinct_speech_quotes(self):
+        # «soggetto» e «fornisce» vicini non devono diventare un solo evento.
+        errs = [
+            EditError("repeated_phrase", 17.0, 20.0,
+                      "Ripresa/stutter da tagliare: «a un soggetto» ripetuto (3 parole).", 0.88),
+            EditError("repeated_phrase", 22.0, 25.0,
+                      "Parola in più da tagliare: «fornisce» ripetuta subito dopo.", 0.86),
+        ]
+        merged = merge_errors(errs)
         self.assertEqual(len(merged), 2)
-        self.assertIsNot(merged[0], a)
+
+    def test_merge_fuses_same_speech_quote(self):
+        errs = [
+            EditError("repeated_phrase", 10.0, 12.0,
+                      "Parola in più da tagliare: «fornisce» ripetuta subito dopo.", 0.8),
+            EditError("repeated_phrase", 11.5, 13.0,
+                      "Parola in più da tagliare: «fornisce» ripetuta subito dopo.", 0.9),
+        ]
+        merged = merge_errors(errs)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].end, 13.0)
+        self.assertEqual(merged[0].confidence, 0.9)
 
     def test_filter_confidence_and_short_black(self):
         errs = [

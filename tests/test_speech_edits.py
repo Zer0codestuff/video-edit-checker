@@ -100,6 +100,13 @@ class FillerTests(unittest.TestCase):
         self.assertEqual(len(errs), 1)
         self.assertEqual(errs[0].type, "missed_cut")
 
+    def test_detects_asr_variants_emm_ehm(self):
+        from core.language import resolve_language
+        lang = resolve_language("it")
+        for tok in ("emm", "ehm", "ehh", "uhm", "mm"):
+            errs = detect_fillers([_w(1.0, tok)], 5.0, lang)
+            self.assertEqual(len(errs), 1, tok)
+
 
 class PipelineTests(unittest.TestCase):
     def test_combined_finds_all_gt_patterns(self):
