@@ -63,7 +63,8 @@ _PACKS: dict[str, LanguagePack] = {
             re.IGNORECASE,
         ),
         filler_re=re.compile(
-            r"^(ehh+|eee+|eeehm*|aaah*|ahh+|uhm+|mmh+|mh+|ehm+|erm+)$",
+            r"^(ehh+|eee+|eeeh+|aaah*|ahh+|uhm+|uhmm*|mmh+|mh+|ehm+|erm+|eh+|uh+|"
+            r"m{2,}|hmm+)$",
             re.IGNORECASE,
         ),
         black_screen_desc="Schermo nero prolungato rilevato con analisi luminanza.",

@@ -33,14 +33,30 @@ class MergeSubwordTests(unittest.TestCase):
         self.assertEqual([w.text for w in words],
                          ["la", "gestione", "fornisce", "fornisce"])
 
-    def test_parse_words_skips_specials(self):
+    def test_parse_words_skips_specials_keeps_boundaries(self):
         raw = [
             {"text": "[_BEG_]", "timestamps": {"from": "00:00:00,000", "to": "00:00:00,000"}},
             {"text": " ehh", "timestamps": {"from": "00:00:01,000", "to": "00:00:01,400"}},
-            {"text": ".", "timestamps": {"from": "00:00:01,400", "to": "00:00:01,500"}},
+            {"text": " for", "timestamps": {"from": "00:00:01,500", "to": "00:00:01,700"}},
+            {"text": "nisce", "timestamps": {"from": "00:00:01,700", "to": "00:00:01,900"}},
+            {"text": " for", "timestamps": {"from": "00:00:02,000", "to": "00:00:02,200"}},
+            {"text": "nisce", "timestamps": {"from": "00:00:02,200", "to": "00:00:02,400"}},
+            {"text": ".", "timestamps": {"from": "00:00:02,400", "to": "00:00:02,500"}},
         ]
         words = _parse_words(raw)
-        self.assertEqual([w.text for w in words], ["ehh"])
+        self.assertEqual([w.text for w in words], ["ehh", "fornisce", "fornisce"])
+
+    def test_strip_bug_would_merge_all(self):
+        # Regressione: strip() prematuro fondeva tutte le parole in una.
+        raw = [
+            {"text": " Questo", "timestamps": {"from": "00:00:00,000", "to": "00:00:00,400"}},
+            {"text": " pot", "timestamps": {"from": "00:00:00,500", "to": "00:00:00,700"}},
+            {"text": "rebbe", "timestamps": {"from": "00:00:00,700", "to": "00:00:01,000"}},
+            {"text": " pot", "timestamps": {"from": "00:00:01,000", "to": "00:00:01,200"}},
+            {"text": "rebbe", "timestamps": {"from": "00:00:01,200", "to": "00:00:01,500"}},
+        ]
+        words = _parse_words(raw)
+        self.assertEqual([w.text for w in words], ["questo", "potrebbe", "potrebbe"])
 
 
 class WordRepeatTests(unittest.TestCase):

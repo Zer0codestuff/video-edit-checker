@@ -219,15 +219,22 @@ _SPECIAL_TOKEN_RE = re.compile(r"^\[.*\]$")
 
 
 def _parse_words(raw_tokens) -> list[TranscriptWord]:
-    """Estrae parole dai token full-json di whisper.cpp, saltando [_BEG_]/[_TT_...] ecc."""
+    """Estrae parole dai token full-json di whisper.cpp, saltando [_BEG_]/[_TT_...] ecc.
+
+    NON fare strip() qui: lo spazio iniziale e' il boundary BPE tra parole
+    (" for"+"nisce" vs "nisce" attaccato). Lo strip avviene in merge.
+    """
     words: list[TranscriptWord] = []
     if not isinstance(raw_tokens, list):
         return words
     for tok in raw_tokens:
         if not isinstance(tok, dict):
             continue
-        text = str(tok.get("text", "")).strip()
-        if not text or _SPECIAL_TOKEN_RE.match(text):
+        # Conserva leading space: serve a _merge_subword_tokens.
+        text = str(tok.get("text", ""))
+        if not text or not text.strip():
+            continue
+        if _SPECIAL_TOKEN_RE.match(text.strip()):
             continue
         # I token whisper sono spesso sotto-parola (" gest"+"ione"); li
         # teniamo cosi' e li ricomponiamo sotto in parole.
@@ -390,7 +397,40 @@ def transcribe_video(
         "-ojf",
         "-of", str(out_base),
         "-np",
+        # max-context 0: evita che il decoder "lisci" stutter/parole ripetute
+        # usando il contesto precedente (critico per trovare errori di montaggio).
+        "-mc", "0",
+        # split-on-word: timestamp piu' stabili sui confini di parola.
+        "-sow",
     ]
+    # Temperatura > 0 aiuta a NON collassare ripetizioni identiche
+    # (es. «potrebbe potrebbe») in una sola parola. Override con
+    # WHISPER_TEMPERATURE=0 per il comportamento classico.
+    temp = os.environ.get("WHISPER_TEMPERATURE", "0.6").strip()
+    try:
+        temp_f = float(temp)
+    except ValueError:
+        temp_f = 0.6
+    if temp_f > 0:
+        cmd.extend(["-tp", f"{temp_f:g}"])
+    # Prompt iniziale: invita a trascrivere esitazioni/filler invece di
+    # "correggerli". Override con WHISPER_INITIAL_PROMPT="" per disattivare.
+    if "WHISPER_INITIAL_PROMPT" in os.environ:
+        prompt = os.environ.get("WHISPER_INITIAL_PROMPT", "").strip()
+    elif language == "it":
+        prompt = (
+            "Trascrivi tutto il parlato incluso esitazioni e ripetizioni "
+            "come ehh, ehm, uhm e parole duplicate."
+        )
+    elif language == "en":
+        prompt = (
+            "Transcribe all speech including hesitations and repetitions "
+            "such as uh, um, and duplicated words."
+        )
+    else:
+        prompt = ""
+    if prompt:
+        cmd.extend(["--prompt", prompt])
     # Non passare mai -ng/--no-gpu: su build CUDA/Vulkan deve usare la GPU.
     # Flash-attn di default crasha molti driver Vulkan (AMD/Intel/NVIDIA):
     # come in WhisperDrop lo disabilitiamo su Vulkan salvo opt-in esplicito.
