@@ -67,8 +67,23 @@ def run_once(model: str, temp: str) -> dict:
             "fp": best_s["fp"],
             "fn": best_s["fn"],
         }
-    # Parse ranking lines from stdout
-    ranking = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip().startswith("0.")]
+    # Parse ranking lines from stdout (fallback se summary non trovato)
+    ranking = [ln.strip() for ln in (proc.stdout or "").splitlines()
+               if ln.strip()[:1].isdigit() and "P=" in ln]
+    if best is None and ranking:
+        # "0.824  P=1.000 R=0.700  full_wordlevel"
+        parts = ranking[0].split()
+        try:
+            best = {
+                "config": parts[-1],
+                "f1": float(parts[0]),
+                "precision": float(parts[1].split("=")[1]),
+                "recall": float(parts[2].split("=")[1]),
+                "tp": None, "fp": None, "fn": None,
+                "from_stdout": True,
+            }
+        except (IndexError, ValueError):
+            pass
     return {
         "ts": datetime.now(timezone.utc).isoformat(),
         "model": model,

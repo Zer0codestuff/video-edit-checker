@@ -216,7 +216,13 @@ def _strip_words(segments):
 
 def main() -> None:
     model_label = sys.argv[1] if len(sys.argv) > 1 else "Small Q8 (~250 MB, piu veloce)"
-    model_tag = "medium" if "Medium" in model_label or "medium" in model_label.lower() else "small"
+    low = model_label.lower()
+    if "large" in low or "turbo" in low:
+        model_tag = "large"
+    elif "medium" in low:
+        model_tag = "medium"
+    else:
+        model_tag = "small"
     clips = sorted(CORPUS.glob("*.wav"))
     if not clips:
         print("Nessun clip in", CORPUS)
