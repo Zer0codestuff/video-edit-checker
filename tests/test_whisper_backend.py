@@ -74,6 +74,14 @@ class InstallGpuDetectTests(unittest.TestCase):
              mock.patch("platform.system", return_value="Windows"):
             self.assertEqual(install_mod.detect_gpu(), "generic")
 
+    def test_desired_backend_windows(self):
+        self.assertEqual(
+            install_mod._desired_whisper_backend("Windows", "nvidia"), "cuda")
+        self.assertEqual(
+            install_mod._desired_whisper_backend("Windows", "generic"), "vulkan")
+        self.assertEqual(
+            install_mod._desired_whisper_backend("Linux", "generic"), "cpu")
+
     def test_whisper_backend_helper_matches(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

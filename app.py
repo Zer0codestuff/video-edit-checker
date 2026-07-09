@@ -146,29 +146,41 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
     log(f"{len(videos)} video in coda. Lingua analisi: {language_label} ({lang.code}).")
     yield partial()
 
-    # 2. Avvia il modello richiesto
     pipeline = _pipeline_from_label(pipeline_label)
     use_hybrid = pipeline is Pipeline.HYBRID
     use_video = pipeline is Pipeline.VIDEO
-    progress(0.02, desc="Avvio modello...")
+    use_modular = use_hybrid or use_video
     perf = dict(n_parallel=int(n_parallel), ctx_per_slot=int(ctx_per_slot),
                 batch_preset=batch_preset)
     log(f"Prestazioni: {perf['n_parallel']} slot paralleli, "
         f"{perf['ctx_per_slot']} token/slot, batch '{batch_preset}'.")
-    try:
+
+    def ensure_llm(log_fn=log) -> None:
+        """Avvia (o riavvia) llama-server col modello della pipeline corrente."""
         if use_video:
             video_hf, video_mmproj, video_jinja = VIDEO_MODELS[video_model_label]
             SERVER.ensure(video_hf, mmproj_url=video_mmproj,
-                          jinja=video_jinja, log=log, **perf)
+                          jinja=video_jinja, log=log_fn, **perf)
         elif use_hybrid:
-            SERVER.ensure(VISION_MODELS[vision_model_label], log=log, **perf)
+            SERVER.ensure(VISION_MODELS[vision_model_label], log=log_fn, **perf)
         else:
-            SERVER.ensure(MODELS[model_label], log=log, **perf)
-    except Exception as err:
-        log(f"ERRORE avvio modello: {err}")
+            SERVER.ensure(MODELS[model_label], log=log_fn, **perf)
+
+    # Omni: serve il modello subito. Hybrid/video: prima whisper (GPU libera),
+    # poi llama-server per i frame — evita contendere VRAM/iGPU.
+    if not use_modular:
+        progress(0.02, desc="Avvio modello...")
+        try:
+            ensure_llm()
+        except Exception as err:
+            log(f"ERRORE avvio modello: {err}")
+            yield partial()
+            return
         yield partial()
-        return
-    yield partial()
+    else:
+        log("Pipeline modulare: prima trascrizione whisper.cpp, "
+            "poi avvio del modello per i frame.")
+        yield partial()
 
     # 3. Analizza in sequenza
     run_results: dict[str, list[EditError]] = {}
@@ -188,7 +200,6 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
         vdir = run_dir / f"video_{v_i:02d}_{safe}"
         vdir.mkdir(parents=True, exist_ok=True)
 
-        use_modular = use_hybrid or use_video
         try:
             wins = make_windows(video, vdir / "windows", log=log,
                                 with_audio=not use_modular,
@@ -209,46 +220,71 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
             analyze = vision_analyzer_for(lang)
         else:
             analyze = analyzer_for(lang)
-        # Tante richieste LLM in volo quanti sono gli slot llama-server +
-        # whisper su CPU in parallelo, per non lasciare ferma la GPU.
-        # shutdown(wait=False, cancel_futures=True): un future in timeout
-        # non deve bloccare l'intera analisi in attesa del worker.
-        llm_pool = ThreadPoolExecutor(max_workers=SERVER.n_parallel)
-        bg_pool = ThreadPoolExecutor(max_workers=1)
-        try:
-            transcript_future = None
-            if use_modular:
-                if use_video:
-                    log("Pipeline video nativa: euristiche visive + whisper.cpp "
-                        "+ clip mp4 al modello video.")
-                else:
-                    log("Pipeline ibrida: euristiche visive + whisper.cpp + modello vision-only.")
-                raw_errors.extend(detect_visual_heuristics(
-                    wins, log=log, language=lang))
-                if cancelled():
-                    log("Analisi annullata dall'utente.")
-                    aborted = True
-                    break
-                transcript_future = bg_pool.submit(
-                    transcribe_video,
+
+        if use_modular:
+            if use_video:
+                log("Pipeline video nativa: euristiche → whisper.cpp → clip mp4 al modello.")
+            else:
+                log("Pipeline ibrida: euristiche → whisper.cpp → modello vision-only.")
+            raw_errors.extend(detect_visual_heuristics(
+                wins, log=log, language=lang))
+            if cancelled():
+                log("Analisi annullata dall'utente.")
+                aborted = True
+                break
+            # Libera VRAM: niente llama-server durante whisper (soprattutto iGPU).
+            if SERVER.is_running():
+                log("Fermo llama-server durante la trascrizione whisper.")
+                SERVER.stop()
+            progress(0.05 + 0.15 * (v_i / max(1, total)),
+                     desc=f"{name}: trascrizione whisper...")
+            yield partial()
+            try:
+                segments = transcribe_video(
                     video,
                     vdir / "whisper",
                     model_label=whisper_model_label or DEFAULT_WHISPER_MODEL_LABEL,
                     language=lang.code,
                     log=log,
                 )
+            except Exception as err:
+                log(f"Trascrizione whisper fallita ({err}); salto analisi audio.")
+                stop_tracked_whisper(log=log)
+                segments = []
+            if cancelled():
+                log("Analisi annullata: interrompo dopo whisper.")
+                stop_tracked_whisper(log=log)
+                aborted = True
+                break
+            if segments:
+                raw_errors.extend(detect_transcript_errors(
+                    segments, probe_duration(video), language=lang))
+            yield partial()
+            progress(0.05 + 0.25 * ((v_i + 0.5) / max(1, total)),
+                     desc=f"{name}: avvio modello vision...")
+            try:
+                ensure_llm()
+            except Exception as err:
+                log(f"ERRORE avvio modello: {err}")
+                aborted = True
+                break
+            yield partial()
 
+        # Finestre LLM in parallelo sugli slot llama-server.
+        # shutdown(wait=False, cancel_futures=True): un future in timeout
+        # non deve bloccare l'intera analisi in attesa del worker.
+        llm_pool = ThreadPoolExecutor(max_workers=SERVER.n_parallel)
+        try:
             futures = [llm_pool.submit(analyze, win, log=log) for win in wins]
             for w_i, fut in enumerate(futures):
                 if cancelled():
                     log("Analisi annullata dall'utente: fermo le finestre in coda.")
                     for pending in futures[w_i:]:
                         pending.cancel()
-                    stop_tracked_whisper(log=log)
                     aborted = True
                     break
                 frac = (v_i + (w_i / max(1, len(wins)))) / total
-                progress(0.05 + 0.9 * frac,
+                progress(0.30 + 0.65 * frac,
                          desc=f"{name}: finestra {w_i + 1}/{len(wins)}")
                 try:
                     found = fut.result(timeout=WINDOW_FUTURE_TIMEOUT_SECONDS)
@@ -270,38 +306,9 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                 raw_errors.extend(found)
                 if w_i % 3 == 0:
                     yield partial()
-
-            if aborted:
-                break
-
-            if transcript_future is not None:
-                if cancelled():
-                    log("Analisi annullata: interrompo la trascrizione whisper.")
-                    transcript_future.cancel()
-                    stop_tracked_whisper(log=log)
-                    aborted = True
-                    break
-                try:
-                    segments = transcript_future.result(
-                        timeout=WINDOW_FUTURE_TIMEOUT_SECONDS)
-                except FuturesTimeout:
-                    log("Trascrizione whisper: timeout; termino whisper-cli.")
-                    transcript_future.cancel()
-                    stop_tracked_whisper(log=log)
-                    segments = []
-                except Exception as err:
-                    log(f"Trascrizione whisper fallita ({err}); salto analisi audio.")
-                    stop_tracked_whisper(log=log)
-                    segments = []
-                if segments and not cancelled():
-                    raw_errors.extend(detect_transcript_errors(
-                        segments, probe_duration(video), language=lang))
         finally:
-            # Chiudi eventuali whisper ancora vivi prima dello shutdown pool
-            # (cancel_futures da solo non uccide il subprocess figlio).
             stop_tracked_whisper(log=log)
             llm_pool.shutdown(wait=False, cancel_futures=True)
-            bg_pool.shutdown(wait=False, cancel_futures=True)
 
         if aborted or cancelled():
             aborted = True

@@ -306,7 +306,13 @@ def transcribe_video(
         "-of", str(out_base),
         "-np",
     ]
-    # Non passare mai -ng/--no-gpu: su build CUDA deve usare la GPU.
+    # Non passare mai -ng/--no-gpu: su build CUDA/Vulkan deve usare la GPU.
+    # Flash-attn di default crasha molti driver Vulkan (AMD/Intel/NVIDIA):
+    # come in WhisperDrop lo disabilitiamo su Vulkan salvo opt-in esplicito.
+    if backend == "vulkan":
+        opt_in = os.environ.get("VEC_VULKAN_FLASH_ATTN", "").strip().lower()
+        if opt_in not in {"1", "true", "yes", "on"}:
+            cmd.append("--no-flash-attn")
     log(f"Trascrivo audio con whisper.cpp ({model.name}, "
         f"backend {_backend_label(backend)})...")
     # Popen (non run): cosi' possiamo terminare il processo su cancel/timeout

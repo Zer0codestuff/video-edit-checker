@@ -33,9 +33,13 @@ L'installer rileva sistema operativo e GPU e scarica da solo tutto il resto nell
 |------------|---------|-------|-------|
 | ffmpeg | build ufficiale gyan.dev | build statica | Homebrew |
 | llama.cpp | **CUDA** se c'e' una GPU NVIDIA, altrimenti **Vulkan** (AMD/Intel) | Vulkan/CPU | Homebrew (Metal) |
-| whisper.cpp | **CUDA (cublas)** se c'e' una GPU NVIDIA, altrimenti BLAS/CPU | build ufficiale | Homebrew |
+| whisper.cpp | **CUDA (cublas)** su NVIDIA; **Vulkan** su AMD/Intel | build ufficiale | Homebrew |
 
-Su PC con GPU NVIDIA l'installer scarica la release ufficiale `whisper-cublas-12.x` e copia accanto a `whisper-cli` le DLL runtime CUDA (`cudart`/`cublas`) dal pacchetto llama.cpp. In log vedrai `backend CUDA (NVIDIA GPU)`. Su AMD/Intel resta la build CPU/BLAS (le release ufficiali whisper.cpp non includono ancora Vulkan).
+Su Windows l'installer sceglie il backend whisper in base alla GPU:
+- **NVIDIA**: release ufficiale `whisper-cublas-12.x` + DLL runtime CUDA da llama.cpp → log `backend CUDA (NVIDIA GPU)`.
+- **AMD/Intel**: build Vulkan community (le release ufficiali whisper.cpp non includono ancora Vulkan) → log `backend Vulkan GPU`.
+
+Nelle pipeline ibrida/video la trascrizione whisper gira **prima** dell'analisi frame: llama-server viene fermato durante whisper per non contendere la VRAM, poi riavviato.
 
 Rilanciare `install.py` e' sempre sicuro: salta quello che e' gia' presente.
 
@@ -93,6 +97,7 @@ La clip mp4 di ogni finestra viene inviata a `llama-server` come `input_video`: 
 
 ## Prestazioni e GPU dedicate
 
+- Whisper e llama-server **non** girano insieme: prima la trascrizione, poi le finestre LLM (slot paralleli solo tra finestre).
 - Le richieste al modello girano in **parallelo** (default 2 slot). Su GPU dedicate con piu VRAM puoi alzare il parallelismo:
 
   ```bash

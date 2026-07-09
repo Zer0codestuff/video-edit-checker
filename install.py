@@ -34,6 +34,14 @@ VENV = ROOT / ".venv"
 FFMPEG_WIN_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 FFMPEG_LINUX_URL = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
 
+# Release ufficiali whisper.cpp non includono Vulkan su Windows. Per AMD/Intel
+# usiamo una build community con ggml-vulkan.dll (stesso approccio di WhisperDrop).
+WHISPER_VULKAN_WIN_URL = (
+    "https://github.com/eviscerations/whisper-windows-mcp/releases/download/"
+    "v1.4.0/whisper-vulkan-win-x64.zip"
+)
+WHISPER_VULKAN_WIN_NAME = "whisper-vulkan-win-x64.zip"
+
 
 def log(msg: str) -> None:
     print(f"[install] {msg}", flush=True)
@@ -415,42 +423,38 @@ def _copy_cuda_dlls_to(dest_dir: Path) -> int:
     return copied
 
 
-def setup_whisper(system: str, gpu: str) -> None:
-    want_cuda = system == "Windows" and gpu == "nvidia"
-    existing = which_anywhere("whisper-cli")
-    if existing:
-        existing_path = Path(existing)
-        backend = _whisper_backend(existing_path)
-        in_tools = False
-        try:
-            existing_path.resolve().relative_to((TOOLS / "whisper").resolve())
-            in_tools = True
-        except (ValueError, OSError):
-            in_tools = False
-        if want_cuda and backend != "cuda":
-            if in_tools:
-                log("whisper-cli in tools/ senza CUDA: reinstallo la build GPU NVIDIA.")
-                shutil.rmtree(TOOLS / "whisper", ignore_errors=True)
-            else:
-                log("whisper-cli di sistema senza CUDA: scarico la build GPU in tools/.")
-        elif want_cuda and backend == "cuda":
-            # Build CUDA ok: assicurati solo che le DLL runtime siano presenti.
-            if in_tools:
-                _ensure_llama_cudart()
-                _copy_cuda_dlls_to(existing_path.parent)
-            log(f"whisper-cli gia' presente (backend {backend}), salto.")
-            return
-        else:
-            log(f"whisper-cli gia' presente (backend {backend}), salto.")
-            return
-    if system == "Darwin":
-        if not try_brew("whisper-cpp"):
-            log("ATTENZIONE: whisper-cli non installato; la pipeline ibrida non avra' l'analisi audio.")
-        return
+def _whisper_in_tools(exe: Path) -> bool:
+    try:
+        exe.resolve().relative_to((TOOLS / "whisper").resolve())
+        return True
+    except (ValueError, OSError):
+        return False
 
+
+def _desired_whisper_backend(system: str, gpu: str) -> str:
+    """Backend whisper preferito: cuda (NVIDIA Win), vulkan (AMD/Intel Win), cpu."""
+    if system == "Windows" and gpu == "nvidia":
+        return "cuda"
+    if system == "Windows" and gpu == "generic":
+        return "vulkan"
+    return "cpu"
+
+
+def _install_whisper_vulkan_windows() -> Path | None:
+    """Scarica la build community Vulkan e la estrae in tools/whisper."""
+    log(f"Scarico whisper.cpp Vulkan: {WHISPER_VULKAN_WIN_NAME}")
+    if (TOOLS / "whisper").exists():
+        shutil.rmtree(TOOLS / "whisper", ignore_errors=True)
+    archive = TOOLS / WHISPER_VULKAN_WIN_NAME
+    download(WHISPER_VULKAN_WIN_URL, archive)
+    extract(archive, TOOLS / "whisper")
+    return _tools_binary("whisper-cli")
+
+
+def _install_whisper_official(system: str, want_cuda: bool) -> Path | None:
+    """Scarica una release ufficiale ggml-org/whisper.cpp (CUDA o BLAS/CPU)."""
     assets = github_latest_assets("ggml-org/whisper.cpp")
     if system == "Windows":
-        # cublas-12.x per primo, coerente con la build CUDA 12.4 di llama.cpp
         patterns = ([r"whisper-cublas-12\..*bin-x64\.zip",
                      r"whisper-cublas-12.*bin-x64\.zip",
                      r"whisper-cublas.*bin-x64\.zip"]
@@ -461,15 +465,15 @@ def setup_whisper(system: str, gpu: str) -> None:
 
     asset = pick_asset(assets, patterns)
     if asset is None:
-        log("ATTENZIONE: nessun binario whisper.cpp adatto; la pipeline ibrida non avra' l'analisi audio.")
-        return
+        log("ATTENZIONE: nessun binario whisper.cpp adatto; "
+            "la pipeline ibrida non avra' l'analisi audio.")
+        return None
     if want_cuda and "cublas" not in asset["name"].lower():
         log("ATTENZIONE: nessuna build whisper-cublas nelle release; "
             f"uso {asset['name']} (CPU). Su PC NVIDIA rilancia install.py piu' tardi.")
     else:
         log(f"Scarico whisper.cpp: {asset['name']}")
 
-    # Su NVIDIA prepara prima il runtime CUDA (serve dopo l'estrazione).
     if want_cuda:
         _ensure_llama_cudart()
 
@@ -478,8 +482,62 @@ def setup_whisper(system: str, gpu: str) -> None:
     archive = TOOLS / asset["name"]
     download(asset["browser_download_url"], archive)
     extract(archive, TOOLS / "whisper")
+    return _tools_binary("whisper-cli")
 
-    exe = _tools_binary("whisper-cli")
+
+def setup_whisper(system: str, gpu: str) -> None:
+    want = _desired_whisper_backend(system, gpu)
+    want_cuda = want == "cuda"
+    want_vulkan = want == "vulkan"
+
+    # Preferisci sempre tools/: un whisper di sistema (PATH) non deve
+    # mascherare la build GPU locale ne' forzare un re-download a ogni run.
+    tools_exe = _tools_binary("whisper-cli")
+    existing_path = tools_exe or (
+        Path(which_anywhere("whisper-cli")) if which_anywhere("whisper-cli") else None
+    )
+    if existing_path is not None:
+        backend = _whisper_backend(existing_path)
+        in_tools = tools_exe is not None
+        needs_upgrade = (
+            (want_cuda and backend != "cuda")
+            or (want_vulkan and backend != "vulkan")
+        )
+        if needs_upgrade:
+            if in_tools:
+                log(f"whisper-cli in tools/ (backend {backend}): "
+                    f"reinstallo la build {want}.")
+                shutil.rmtree(TOOLS / "whisper", ignore_errors=True)
+            else:
+                log(f"whisper-cli di sistema (backend {backend}): "
+                    f"scarico la build {want} in tools/.")
+        else:
+            if want_cuda and in_tools:
+                _ensure_llama_cudart()
+                _copy_cuda_dlls_to(existing_path.parent)
+            log(f"whisper-cli gia' presente (backend {backend}), salto.")
+            return
+
+    if system == "Darwin":
+        if not try_brew("whisper-cpp"):
+            log("ATTENZIONE: whisper-cli non installato; "
+                "la pipeline ibrida non avra' l'analisi audio.")
+        return
+
+    exe: Path | None = None
+    if want_vulkan:
+        try:
+            exe = _install_whisper_vulkan_windows()
+        except Exception as err:
+            log(f"ATTENZIONE: download whisper Vulkan fallito ({err}); "
+                "provo la build ufficiale CPU.")
+            exe = None
+        if exe is None or _whisper_backend(exe) != "vulkan":
+            log("ATTENZIONE: build Vulkan non utilizzabile; fallback CPU ufficiale.")
+            exe = _install_whisper_official(system, want_cuda=False)
+    else:
+        exe = _install_whisper_official(system, want_cuda=want_cuda)
+
     if exe is None:
         log("ATTENZIONE: whisper-cli non trovato dopo l'estrazione.")
         return
@@ -490,6 +548,12 @@ def setup_whisper(system: str, gpu: str) -> None:
             log("whisper-cli OK (build CUDA / NVIDIA).")
         else:
             log("ATTENZIONE: scaricata una build whisper senza CUDA; "
+                "l'audio verra' trascritto su CPU.")
+    elif want_vulkan:
+        if backend == "vulkan":
+            log("whisper-cli OK (build Vulkan / AMD-Intel).")
+        else:
+            log(f"ATTENZIONE: whisper senza Vulkan (backend {backend}); "
                 "l'audio verra' trascritto su CPU.")
     else:
         log(f"whisper-cli OK (backend {backend}).")
