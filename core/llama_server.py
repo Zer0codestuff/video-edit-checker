@@ -34,6 +34,8 @@ VISION_MODELS: dict[str, str] = {
     "LiquidAI LFM2.5-VL 1.6B Q4 (vision-only, minimo consumo)": "LiquidAI/LFM2.5-VL-1.6B-GGUF:Q4_0",
     "SmolVLM2 500M Video (vision-only, velocissimo)": "ggml-org/SmolVLM2-500M-Video-Instruct-GGUF",
     "Qwen2.5-VL 3B (vision-only, piu accurato)": "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF",
+    "InternVL3.5 4B Q4_K_M (vision-only, accurato, ~3 GB)":
+        "bartowski/OpenGVLab_InternVL3_5-4B-GGUF:Q4_K_M",
 }
 DEFAULT_VISION_MODEL_LABEL = "LiquidAI LFM2.5-VL 1.6B Q8 (vision-only, leggero)"
 

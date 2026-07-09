@@ -73,6 +73,7 @@ L'interfaccia web sara disponibile su **http://127.0.0.1:7860**. Al primo "Anali
 | `LiquidAI/LFM2.5-VL-1.6B` Q8/Q4 | 1.6B | Leggerissimo |
 | `SmolVLM2-500M-Video` | 0.5B | Velocissimo |
 | `Qwen2.5-VL-3B-Instruct` | 3B | Piu accurato |
+| `bartowski/OpenGVLab_InternVL3_5-4B-GGUF` Q4_K_M | 4B | Accurato, ~3 GB |
 
 L'audio della pipeline ibrida usa whisper.cpp con `ggml-large-v3-turbo-q5_0` (scaricato automaticamente al primo uso).
 
