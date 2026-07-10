@@ -64,7 +64,9 @@ def call_chat(
     *,
     timeout: float = 600.0,
     max_tokens: int = 2000,
+    temperature: float | None = None,
     enable_thinking: bool | None = None,
+    json_schema: bool = True,
     log: LogFn = print,
     error_label: str = "inferenza",
 ) -> str | None:
@@ -77,13 +79,14 @@ def call_chat(
     payload: dict[str, Any] = {
         "messages": [{"role": "user", "content": content}],
         "max_tokens": max_tokens,
-        "temperature": DEFAULT_TEMPERATURE,
+        "temperature": DEFAULT_TEMPERATURE if temperature is None else temperature,
         "stream": False,
-        "response_format": {
+    }
+    if json_schema:
+        payload["response_format"] = {
             "type": "json_schema",
             "schema": RESPONSE_SCHEMA,
-        },
-    }
+        }
     if enable_thinking is not None:
         # Disattiva il ragionamento nei modelli thinking ibridi (es. MiniCPM-o):
         # senza, bruciano tutti i token in reasoning_content. Ignorato dai
@@ -97,8 +100,17 @@ def call_chat(
                 f"{HOST}/v1/chat/completions", json=payload, timeout=timeout)
             r.raise_for_status()
             message = r.json()["choices"][0]["message"]
-            # Alcuni modelli "thinking" mettono l'output in reasoning_content
-            return message.get("content") or message.get("reasoning_content") or ""
+            # Preferisci content; se thinking ha riempito solo reasoning_content
+            # prova a riusarlo (utile se il budget e' stato esaurito).
+            content_text = (message.get("content") or "").strip()
+            reasoning = (message.get("reasoning_content") or "").strip()
+            if content_text:
+                return content_text
+            if reasoning:
+                log(f"{error_label}: content vuoto, uso reasoning_content "
+                    f"({len(reasoning)} char).")
+                return reasoning
+            return ""
         except Exception as err:
             last_err = err
             if attempt < _MAX_RETRIES and _is_retryable(err):

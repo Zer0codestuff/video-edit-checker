@@ -313,6 +313,11 @@ def _parse_json(path: Path) -> list[TranscriptSegment]:
     return segments
 
 
+def load_transcript_json(path: Path | str) -> list[TranscriptSegment]:
+    """Carica un transcript whisper.cpp (-oj / -ojf) da file JSON."""
+    return _parse_json(Path(path))
+
+
 def detect_whisper_backend(whisper_bin: str | Path) -> str:
     """Rileva il backend della build whisper-cli: cuda, vulkan, metal o cpu.
 

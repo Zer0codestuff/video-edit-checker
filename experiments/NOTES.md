@@ -147,6 +147,26 @@ Modulo sperimentale `core/transcript_llm.py` (non collegato all'app di default).
 
 Conclusione: con modelli piccoli testo-only, le regole word-level battono l'LLM su precision/recall per questo task. L'LLM resta utile solo come secondo parere opzionale con modelli più grandi.
 
+## LLM-on-transcript (Qwen3.5-4B) — video reale 3.5
+
+Script: `python -m experiments.eval_qwen_transcript --transcript ... [--thinking|--no-thinking]`.
+
+Stesso transcript Small@0.8 del run UI. Match stretto ±3s vs GT manuale.
+
+| Setup | TP/5 | FP | Tempo | Note |
+|-------|------|----|-------|------|
+| Euristiche word-level | **4** | 2 | <1s | baseline attuale |
+| Qwen3.5-4B **thinking** (budget 256, chunk 45s) | 1 | 7 | ~3 min | trova solo «il il»; molti FP ASR |
+| Qwen3.5-4B **no thinking** (chunk 45s) | 0 | 7 | ~45s | peggiore |
+
+Problemi osservati:
+1. Con thinking illimitato brucia tutti i `max_tokens` elencando le righe → content vuoto.
+2. Anche con budget basso spesso risponde `{"errors":[]}` sui near-repeat evidenti (`potrebbe…potrebbe`, `a un soggetto`).
+3. Non recupera `ehh` (assente dal transcript).
+4. Inventa ripetizioni su token ASR spezzati (`d'arnoso`, `compagnia`).
+
+Conclusione: su questo video Qwen3.5-4B **non batte** le euristiche; thinking non aiuta il recall e aumenta i FP.
+
 ## Loop notturno
 
 ```bash
