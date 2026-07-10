@@ -58,6 +58,7 @@ scende a F1 ~0.57. **Small** con temp 0.8 è il migliore per questo task.
 | Large v3 Turbo Q5 | 0.8 | ~0.89 | 0.89 (n=6) |
 | Large v3 Turbo Q5 | 0.0 | ~0.82–0.89 | 0.86 (n=9) |
 | Large v3 Turbo Q5 | 0.6 | ~0.46 | 0.46 (n=3) |
+| Large ensemble 0.0+0.8 | **0.75** | (manuale) — **peggio** del single 0.8 |
 
 ## Ensemble multi-temperatura
 
@@ -69,7 +70,9 @@ Due passate (0.0 + 0.8) unite → **F1 1.0** (2× tempo whisper).
 `0.0` e `0.8` catturano sottoinsiemi diversi → l'unione li copre tutti.
 
 Checkbox UI: «Ensemble whisper (temp 0.0 + 0.8)». Consigliato solo se usi
-Medium/Large; con Small di solito non serve.
+**Medium**; con Small di solito non serve. Su **Large** l'ensemble puo'
+addirittura peggiorare (0.89 → 0.75): entrambe le temperature collassano
+gli stessi stutter, quindi l'unione non aggiunge recall.
 
 ## Falsi positivi
 
