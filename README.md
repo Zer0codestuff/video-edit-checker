@@ -10,6 +10,8 @@ Tool locale che analizza video per trovare **errori di montaggio** usando modell
 | Frame congelato | Immagine bloccata mentre l'audio prosegue |
 | Taglio mancante | Chi parla sbaglia, dice "lo ripeto" / "aspetta" / "rifacciamo", o ci sono esitazioni/momenti morti evidenti |
 | Frase ripetuta | Stessa frase o parte di frase pronunciata due volte quasi identica |
+| Parola/stutter | Parola o n-gram ripetuto subito dopo (es. «fornisce fornisce», «a un soggetto a un soggetto») — rilevato dai word-token di whisper |
+| Filler | Esitazioni evidenti da tagliare («ehh», «ehm», «uhm») |
 | Problema audio | Audio che salta, si interrompe, silenzio anomalo, rumori di registrazione |
 | Altro | Altri evidenti errori di montaggio o registrazione |
 
@@ -54,8 +56,9 @@ L'interfaccia web sara disponibile su **http://127.0.0.1:7860**. Al primo "Anali
 
 1. Carica uno o piu **video locali** (mp4, mkv, mov, ...) oppure incolla **URL YouTube** (uno per riga; funzionano anche playlist).
 2. Scegli la **pipeline**:
+   - **Solo parlato** (consigliata per parole in più / filler / stutter): whisper.cpp + euristiche, senza VLM
    - **Omni VLM**: un solo modello che vede e sente (audio + visione)
-   - **Vision + whisper.cpp** (consigliata sui PC leggeri): euristiche pixel + modello vision-only per i frame + whisper.cpp per l'audio
+   - **Vision + whisper.cpp**: euristiche pixel + modello vision-only per i frame + whisper.cpp per l'audio
    - **Video nativo + whisper.cpp** (sperimentale): la clip mp4 di ogni finestra viene passata direttamente al modello, che la campiona a 4 fps (~12x piu frame della pipeline ibrida)
 3. Imposta la **lingua del video** (Italiano / English): guida whisper.cpp, i prompt del modello e le descrizioni nel report.
 4. Premi **Analizza** e consulta gli errori nella **tabella** e nella **galleria di screenshot**.
@@ -118,10 +121,11 @@ La clip mp4 di ogni finestra viene inviata a `llama-server` come `input_video`: 
 
 1. **Input**: video locali o scaricati da YouTube via yt-dlp (max 480p).
 2. **Frame**: estratti in un unico passaggio ffmpeg (1 ogni 3 secondi, max 448px), condivisi tra finestre da ~20 secondi con 2 secondi di overlap.
-3. **Euristiche pixel** (pipeline ibrida): luminanza per gli schermi neri, confronto pixel per i frame congelati.
-4. **Inferenza**: frame (+ audio per la pipeline omni) inviati a `llama-server` via API OpenAI-compatible; risposta JSON strutturata forzata da schema.
-5. **Verifica**: ogni errore visivo segnalato dal modello viene ricontrollato sui pixel reali; schermi neri sotto i 5 secondi vengono scartati.
-6. **Aggregazione**: merge degli errori tra finestre adiacenti, filtro per confidence, tabella + screenshot + report JSON/CSV.
+3. **Euristiche pixel** (pipeline ibrida/speech): luminanza per gli schermi neri, confronto pixel per i frame congelati.
+4. **Parlato (whisper.cpp)**: trascrizione word-level; rileva stutter («fornisce fornisce»), n-gram ripetuti, filler («ehh»/«ehm») e frasi di ripresa. Default temp 0.8; ensemble 0.0+0.8 opzionale.
+5. **Inferenza VLM** (omni/hybrid/video): frame (+ audio per omni) a `llama-server`; JSON strutturato. Saltata nella pipeline «Solo parlato».
+6. **Verifica**: ogni errore visivo segnalato dal modello viene ricontrollato sui pixel reali; schermi neri sotto i 5 secondi vengono scartati.
+7. **Aggregazione**: merge degli errori tra finestre adiacenti (senza fondere citazioni speech diverse), filtro per confidence, tabella + screenshot + report JSON/CSV.
 
 ## Struttura del progetto
 
@@ -142,6 +146,8 @@ video-edit-checker/
 │   ├── video_analyzer.py   # Pipeline video nativa: clip mp4
 │   ├── heuristics.py       # Euristiche pixel + verifica anti-allucinazione
 │   ├── whisper_cpp.py      # Trascrizione e errori audio (whisper.cpp)
+│   ├── speech_edits.py     # Stutter/filler/parole ripetute (word-level)
+│   ├── speech_ensemble.py  # Ensemble multi-temperatura (opzionale)
 │   ├── binaries.py         # Risoluzione binari da tools/ e PATH
 │   ├── ingest.py           # Input video: file locali e YouTube (yt-dlp)
 │   ├── llama_server.py     # Gestione processo llama-server

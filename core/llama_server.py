@@ -213,7 +213,8 @@ class LlamaServer:
     def ensure(self, hf_model: str, mmproj_url: str | None = None,
                jinja: bool = False, n_parallel: int | None = None,
                ctx_per_slot: int | None = None,
-               batch_preset: str | None = None, log=print) -> None:
+               batch_preset: str | None = None,
+               reasoning_budget: int = 0, log=print) -> None:
         """Garantisce che il server giri con il modello richiesto.
 
         `mmproj_url` serve per i repo che tengono il proiettore multimodale
@@ -221,6 +222,7 @@ class LlamaServer:
         cachato da llama-server come il modello principale.
         `jinja` abilita il template jinja del modello: necessario per i
         modelli thinking ibridi che devono ricevere enable_thinking=false.
+        `reasoning_budget` limita i token di thinking (0 = off, -1 = illimitato).
         `n_parallel`/`ctx_per_slot`/`batch_preset` sovrascrivono i default
         (UI, sezione Prestazioni); al cambio il server viene riavviato.
         """
@@ -236,7 +238,8 @@ class LlamaServer:
                 "(mmproj/MTP non supporta -np > 1).")
             n_parallel = 1
         key = (f"{hf_model}|{mmproj_url or ''}|{jinja}"
-               f"|{n_parallel}|{ctx_per_slot}|{batch}|{ubatch}|mtp={use_mtp}")
+               f"|{n_parallel}|{ctx_per_slot}|{batch}|{ubatch}"
+               f"|mtp={use_mtp}|rb={reasoning_budget}")
         self.n_parallel = n_parallel
         if self.is_running() and self.current_key == key:
             return
@@ -255,7 +258,7 @@ class LlamaServer:
             "-np", str(n_parallel),
             "-b", str(batch),
             "-ub", str(ubatch),
-            "--reasoning-budget", "0",
+            "--reasoning-budget", str(int(reasoning_budget)),
             "--no-webui",
         ]
         if mmproj_url:

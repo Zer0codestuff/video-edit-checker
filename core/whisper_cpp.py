@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import threading
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -38,10 +38,19 @@ _active_procs: set[subprocess.Popen] = set()
 
 
 @dataclass
+class TranscriptWord:
+    """Token word-level da whisper.cpp (-ojf)."""
+    start: float
+    end: float
+    text: str
+
+
+@dataclass
 class TranscriptSegment:
     start: float
     end: float
     text: str
+    words: list[TranscriptWord] = field(default_factory=list)
 
 
 def _model_url(filename: str) -> str:
@@ -206,6 +215,86 @@ def _to_seconds(value) -> float:
     return hours * 3600 + minutes * 60 + seconds
 
 
+_SPECIAL_TOKEN_RE = re.compile(r"^\[.*\]$")
+
+
+def _parse_words(raw_tokens) -> list[TranscriptWord]:
+    """Estrae parole dai token full-json di whisper.cpp, saltando [_BEG_]/[_TT_...] ecc.
+
+    NON fare strip() qui: lo spazio iniziale e' il boundary BPE tra parole
+    (" for"+"nisce" vs "nisce" attaccato). Lo strip avviene in merge.
+    """
+    words: list[TranscriptWord] = []
+    if not isinstance(raw_tokens, list):
+        return words
+    for tok in raw_tokens:
+        if not isinstance(tok, dict):
+            continue
+        # Conserva leading space: serve a _merge_subword_tokens.
+        text = str(tok.get("text", ""))
+        if not text or not text.strip():
+            continue
+        if _SPECIAL_TOKEN_RE.match(text.strip()):
+            continue
+        # I token whisper sono spesso sotto-parola (" gest"+"ione"); li
+        # teniamo cosi' e li ricomponiamo sotto in parole.
+        ts = tok.get("timestamps") or {}
+        start = _to_seconds(tok.get("start", ts.get("from", 0)))
+        end = _to_seconds(tok.get("end", ts.get("to", start)))
+        words.append(TranscriptWord(start, end, text))
+    return _merge_subword_tokens(words)
+
+
+def _merge_subword_tokens(tokens: list[TranscriptWord]) -> list[TranscriptWord]:
+    """Ricompone sotto-parole whisper in parole separate da spazio.
+
+    whisper.cpp emette token BPE: " for"+"nisce" → "fornisce".
+    Un nuovo token che inizia con spazio (o e' interamente punteggiatura)
+    chiude la parola precedente.
+    """
+    if not tokens:
+        return []
+    merged: list[TranscriptWord] = []
+    buf_text = ""
+    buf_start = 0.0
+    buf_end = 0.0
+
+    def _flush() -> None:
+        nonlocal buf_text
+        cleaned = re.sub(r"[^\wàèéìòùáéíóúäëïöüñç']", "", buf_text, flags=re.I)
+        cleaned = cleaned.lower().strip("'")
+        if cleaned:
+            merged.append(TranscriptWord(buf_start, buf_end, cleaned))
+        buf_text = ""
+
+    for tok in tokens:
+        raw = tok.text
+        starts_new = raw[:1].isspace() or (buf_text == "")
+        piece = raw.strip()
+        if not piece:
+            continue
+        # Punteggiatura isolata: chiudi parola, non aggiungere token.
+        if re.fullmatch(r"[^\wàèéìòù']+", piece, flags=re.I):
+            if buf_text:
+                _flush()
+            continue
+        if starts_new and buf_text:
+            _flush()
+            buf_start = tok.start
+            buf_text = piece
+            buf_end = tok.end
+        elif not buf_text:
+            buf_start = tok.start
+            buf_text = piece
+            buf_end = tok.end
+        else:
+            buf_text += piece
+            buf_end = tok.end
+    if buf_text:
+        _flush()
+    return merged
+
+
 def _parse_json(path: Path) -> list[TranscriptSegment]:
     data = json.loads(path.read_text(encoding="utf-8"))
     raw_segments = data.get("transcription") or data.get("segments") or []
@@ -217,8 +306,16 @@ def _parse_json(path: Path) -> list[TranscriptSegment]:
         ts = item.get("timestamps") or {}
         start = item.get("start", ts.get("from", 0))
         end = item.get("end", ts.get("to", start))
-        segments.append(TranscriptSegment(_to_seconds(start), _to_seconds(end), text))
+        words = _parse_words(item.get("tokens") or item.get("words") or [])
+        segments.append(TranscriptSegment(
+            _to_seconds(start), _to_seconds(end), text, words=words,
+        ))
     return segments
+
+
+def load_transcript_json(path: Path | str) -> list[TranscriptSegment]:
+    """Carica un transcript whisper.cpp (-oj / -ojf) da file JSON."""
+    return _parse_json(Path(path))
 
 
 def detect_whisper_backend(whisper_bin: str | Path) -> str:
@@ -259,12 +356,56 @@ def _backend_label(backend: str) -> str:
     }.get(backend, backend)
 
 
+def whisper_decoding_args(language: str = "it", speech_mode: bool = False) -> list[str]:
+    """Flag di decoding whisper.cpp dipendenti dalla pipeline.
+
+    speech_mode=True (pipeline Solo parlato / ensemble speech): preserva
+    stutter e filler (-mc 0, -sow, temp 0.8, prompt anti-correzione).
+    speech_mode=False: comportamento classico; gli override via env restano validi.
+    """
+    args: list[str] = []
+    if speech_mode:
+        # max-context 0: evita che il decoder "lisci" stutter/parole ripetute.
+        args.extend(["-mc", "0"])
+        # split-on-word: timestamp piu' stabili sui confini di parola.
+        args.append("-sow")
+
+    default_temp = "0.8" if speech_mode else "0"
+    temp = os.environ.get("WHISPER_TEMPERATURE", default_temp).strip()
+    try:
+        temp_f = float(temp)
+    except ValueError:
+        temp_f = 0.8 if speech_mode else 0.0
+    if temp_f > 0:
+        args.extend(["-tp", f"{temp_f:g}"])
+
+    # Prompt: solo in speech_mode di default; WHISPER_INITIAL_PROMPT override sempre.
+    if "WHISPER_INITIAL_PROMPT" in os.environ:
+        prompt = os.environ.get("WHISPER_INITIAL_PROMPT", "").strip()
+    elif speech_mode and language == "it":
+        prompt = (
+            "Trascrivi tutto il parlato incluso esitazioni e ripetizioni "
+            "come ehh, ehm, uhm e parole duplicate."
+        )
+    elif speech_mode and language == "en":
+        prompt = (
+            "Transcribe all speech including hesitations and repetitions "
+            "such as uh, um, and duplicated words."
+        )
+    else:
+        prompt = ""
+    if prompt:
+        args.extend(["--prompt", prompt])
+    return args
+
+
 def transcribe_video(
     video: Path,
     workdir: Path,
     model_path: str = "",
     model_label: str = "",
     language: str = "it",
+    speech_mode: bool = False,
     log=print,
 ) -> list[TranscriptSegment]:
     whisper_bin = shutil.which("whisper-cli")
@@ -281,6 +422,7 @@ def transcribe_video(
         return []
 
     workdir.mkdir(parents=True, exist_ok=True)
+    workdir = workdir.resolve()
     audio_path = workdir / "audio_16khz.wav"
     out_base = workdir / "transcript"
     subprocess.run(
@@ -305,6 +447,7 @@ def transcribe_video(
         "-ojf",
         "-of", str(out_base),
         "-np",
+        *whisper_decoding_args(language=language, speech_mode=speech_mode),
     ]
     # Non passare mai -ng/--no-gpu: su build CUDA/Vulkan deve usare la GPU.
     # Flash-attn di default crasha molti driver Vulkan (AMD/Intel/NVIDIA):

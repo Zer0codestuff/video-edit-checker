@@ -35,6 +35,8 @@ from core.report import (batch_summary_md, export_batch, export_csv,
                          fmt_time, merge_errors)
 from core.video_analyzer import video_analyzer_for
 from core.vision_analyzer import vision_analyzer_for
+from core.speech_edits import detect_speech_edit_errors
+from core.speech_ensemble import detect_ensemble, transcribe_multi_temp
 from core.whisper_cpp import (DEFAULT_WHISPER_MODEL_LABEL, WHISPER_MODELS,
                               detect_transcript_errors, kill_orphan_whisper,
                               stop_tracked_whisper, transcribe_video)
@@ -47,6 +49,7 @@ class Pipeline(str, Enum):
     OMNI = "Omni VLM (audio + visione, singolo modello)"
     HYBRID = "Vision + whisper.cpp (leggero, modulare)"
     VIDEO = "Video nativo + whisper.cpp (clip mp4 al modello, sperimentale)"
+    SPEECH = "Solo parlato (whisper.cpp, senza VLM)"
 
 
 PIPELINES = [p.value for p in Pipeline]
@@ -111,6 +114,7 @@ def _pipeline_from_label(label: str) -> Pipeline:
 def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_label,
                  video_model_label, whisper_model_label, language_label,
                  min_confidence, n_parallel, batch_preset, ctx_per_slot,
+                 whisper_ensemble=False,
                  progress=gr.Progress()):
     logs: list[str] = []
     RESULTS.clear()
@@ -152,7 +156,8 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
     pipeline = _pipeline_from_label(pipeline_label)
     use_hybrid = pipeline is Pipeline.HYBRID
     use_video = pipeline is Pipeline.VIDEO
-    use_modular = use_hybrid or use_video
+    use_speech = pipeline is Pipeline.SPEECH
+    use_modular = use_hybrid or use_video or use_speech
     perf = dict(n_parallel=int(n_parallel), ctx_per_slot=int(ctx_per_slot),
                 batch_preset=batch_preset)
     log(f"Prestazioni: {perf['n_parallel']} slot paralleli, "
@@ -160,6 +165,8 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
 
     def ensure_llm(log_fn=log) -> None:
         """Avvia (o riavvia) llama-server col modello della pipeline corrente."""
+        if use_speech:
+            return  # Nessun VLM: solo whisper + euristiche.
         if use_video:
             video_hf, video_mmproj, video_jinja = VIDEO_MODELS[video_model_label]
             SERVER.ensure(video_hf, mmproj_url=video_mmproj,
@@ -170,8 +177,8 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
         else:
             SERVER.ensure(MODELS[model_label], log=log_fn, **perf)
 
-    # Omni: serve il modello subito. Hybrid/video: prima whisper (GPU libera),
-    # poi llama-server per i frame — evita contendere VRAM/iGPU.
+    # Omni: serve il modello subito. Hybrid/video/speech: prima whisper
+    # (GPU libera), poi eventualmente llama-server per i frame.
     if not use_modular:
         progress(0.02, desc="Avvio modello...")
         try:
@@ -182,8 +189,12 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
             return
         yield partial()
     else:
-        log("Pipeline modulare: prima trascrizione whisper.cpp, "
-            "poi avvio del modello per i frame.")
+        if use_speech:
+            log("Pipeline solo parlato: euristiche pixel + whisper.cpp "
+                "(niente modello vision/omni).")
+        else:
+            log("Pipeline modulare: prima trascrizione whisper.cpp, "
+                "poi avvio del modello per i frame.")
         yield partial()
 
     # 3. Analizza in sequenza
@@ -222,11 +233,16 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
             analyze = video_analyzer_for(lang)
         elif use_hybrid:
             analyze = vision_analyzer_for(lang)
+        elif use_speech:
+            analyze = None
         else:
             analyze = analyzer_for(lang)
 
         if use_modular:
-            if use_video:
+            if use_speech:
+                log("Pipeline solo parlato: euristiche pixel → whisper.cpp "
+                    "(stutter/filler/tagli mancati).")
+            elif use_video:
                 log("Pipeline video nativa: euristiche → whisper.cpp → clip mp4 al modello.")
             else:
                 log("Pipeline ibrida: euristiche → whisper.cpp → modello vision-only.")
@@ -244,13 +260,41 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                      desc=f"{name}: trascrizione whisper...")
             yield partial()
             try:
-                segments = transcribe_video(
-                    video,
-                    vdir / "whisper",
-                    model_label=whisper_model_label or DEFAULT_WHISPER_MODEL_LABEL,
-                    language=lang.code,
-                    log=log,
-                )
+                wlabel = whisper_model_label or DEFAULT_WHISPER_MODEL_LABEL
+                # Ensemble multi-temp: utile su Medium/Large che a temp 0
+                # collassano gli stutter; 0.0+0.8 recupera i casi persi.
+                use_ensemble = bool(whisper_ensemble) and use_modular
+                if use_ensemble:
+                    log("Whisper ensemble: trascrivo a temp 0.0 e 0.8, poi unisco.")
+                    seg_lists = transcribe_multi_temp(
+                        video, vdir / "whisper",
+                        temperatures=(0.0, 0.8),
+                        model_label=wlabel,
+                        language=lang.code,
+                        speech_mode=use_speech,
+                        log=log,
+                    )
+                    segments = next((s for s in seg_lists if s), [])
+                    raw_errors.extend(detect_ensemble(
+                        seg_lists, probe_duration(video), language=lang))
+                else:
+                    segments = transcribe_video(
+                        video,
+                        vdir / "whisper",
+                        model_label=wlabel,
+                        language=lang.code,
+                        speech_mode=use_speech,
+                        log=log,
+                    )
+                    if segments:
+                        # Word-level (filler, parola/n-gram ripetuti) + baseline
+                        # a segmenti (trigger "aspetta/lo ripeto", frasi duplicate).
+                        raw_errors.extend(detect_speech_edit_errors(
+                            segments,
+                            probe_duration(video),
+                            language=lang,
+                            baseline_fn=detect_transcript_errors,
+                        ))
             except Exception as err:
                 log(f"Trascrizione whisper fallita ({err}); salto analisi audio.")
                 stop_tracked_whisper(log=log)
@@ -260,59 +304,62 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                 stop_tracked_whisper(log=log)
                 aborted = True
                 break
-            if segments:
-                raw_errors.extend(detect_transcript_errors(
-                    segments, probe_duration(video), language=lang))
             yield partial()
-            progress(0.05 + 0.25 * ((v_i + 0.5) / max(1, total)),
-                     desc=f"{name}: avvio modello vision...")
-            try:
-                ensure_llm()
-            except Exception as err:
-                log(f"ERRORE avvio modello: {err}")
-                aborted = True
-                break
-            yield partial()
-
-        # Finestre LLM in parallelo sugli slot llama-server.
-        # shutdown(wait=False, cancel_futures=True): un future in timeout
-        # non deve bloccare l'intera analisi in attesa del worker.
-        llm_pool = ThreadPoolExecutor(max_workers=SERVER.n_parallel)
-        try:
-            futures = [llm_pool.submit(analyze, win, log=log) for win in wins]
-            for w_i, fut in enumerate(futures):
-                if cancelled():
-                    log("Analisi annullata dall'utente: fermo le finestre in coda.")
-                    for pending in futures[w_i:]:
-                        pending.cancel()
+            if use_speech:
+                # Niente finestre VLM: passa direttamente a merge/filtro.
+                progress(0.85 + 0.1 * ((v_i + 0.5) / max(1, total)),
+                         desc=f"{name}: aggregazione...")
+            else:
+                progress(0.05 + 0.25 * ((v_i + 0.5) / max(1, total)),
+                         desc=f"{name}: avvio modello vision...")
+                try:
+                    ensure_llm()
+                except Exception as err:
+                    log(f"ERRORE avvio modello: {err}")
                     aborted = True
                     break
-                frac = (v_i + (w_i / max(1, len(wins)))) / total
-                progress(0.30 + 0.65 * frac,
-                         desc=f"{name}: finestra {w_i + 1}/{len(wins)}")
-                try:
-                    found = fut.result(timeout=WINDOW_FUTURE_TIMEOUT_SECONDS)
-                except FuturesTimeout:
-                    log(f"Finestra {w_i + 1}/{len(wins)}: timeout "
-                        f"({WINDOW_FUTURE_TIMEOUT_SECONDS:.0f}s); salto.")
-                    found = []
-                    # Annulla le finestre ancora in coda; il worker corrente
-                    # puo' continuare in background ma non blocchiamo lo shutdown.
-                    for pending in futures[w_i:]:
-                        pending.cancel()
-                except Exception as err:
-                    log(f"Finestra {w_i + 1}/{len(wins)}: errore ({err}); salto.")
-                    found = []
-                if found:
-                    for e in found:
-                        log(f"  {e.label} @ {fmt_time(e.start)}-{fmt_time(e.end)} "
-                            f"(conf {e.confidence:.2f}): {e.description}")
-                raw_errors.extend(found)
-                if w_i % 3 == 0:
-                    yield partial()
-        finally:
+                yield partial()
+
+        # Finestre LLM in parallelo sugli slot llama-server (skip se speech-only).
+        # shutdown(wait=False, cancel_futures=True): un future in timeout
+        # non deve bloccare l'intera analisi in attesa del worker.
+        if analyze is not None:
+            llm_pool = ThreadPoolExecutor(max_workers=SERVER.n_parallel)
+            try:
+                futures = [llm_pool.submit(analyze, win, log=log) for win in wins]
+                for w_i, fut in enumerate(futures):
+                    if cancelled():
+                        log("Analisi annullata dall'utente: fermo le finestre in coda.")
+                        for pending in futures[w_i:]:
+                            pending.cancel()
+                        aborted = True
+                        break
+                    frac = (v_i + (w_i / max(1, len(wins)))) / total
+                    progress(0.30 + 0.65 * frac,
+                             desc=f"{name}: finestra {w_i + 1}/{len(wins)}")
+                    try:
+                        found = fut.result(timeout=WINDOW_FUTURE_TIMEOUT_SECONDS)
+                    except FuturesTimeout:
+                        log(f"Finestra {w_i + 1}/{len(wins)}: timeout "
+                            f"({WINDOW_FUTURE_TIMEOUT_SECONDS:.0f}s); salto.")
+                        found = []
+                        for pending in futures[w_i:]:
+                            pending.cancel()
+                    except Exception as err:
+                        log(f"Finestra {w_i + 1}/{len(wins)}: errore ({err}); salto.")
+                        found = []
+                    if found:
+                        for e in found:
+                            log(f"  {e.label} @ {fmt_time(e.start)}-{fmt_time(e.end)} "
+                                f"(conf {e.confidence:.2f}): {e.description}")
+                    raw_errors.extend(found)
+                    if w_i % 3 == 0:
+                        yield partial()
+            finally:
+                stop_tracked_whisper(log=log)
+                llm_pool.shutdown(wait=False, cancel_futures=True)
+        else:
             stop_tracked_whisper(log=log)
-            llm_pool.shutdown(wait=False, cancel_futures=True)
 
         if aborted or cancelled():
             aborted = True
@@ -385,10 +432,19 @@ def select_video(name):
 def _toggle_pipeline(pipeline_label):
     """Mostra solo i controlli rilevanti per la pipeline scelta."""
     pipeline = _pipeline_from_label(pipeline_label)
+    # Per errori di parlato Small preserva meglio gli stutter di Medium/Large.
+    whisper_default = (
+        "Small Q8 (~250 MB, piu veloce)"
+        if pipeline is Pipeline.SPEECH
+        else DEFAULT_WHISPER_MODEL_LABEL
+    )
+    whisper_vis = pipeline in {
+        Pipeline.HYBRID, Pipeline.VIDEO, Pipeline.SPEECH}
     return (gr.update(visible=pipeline is Pipeline.OMNI),
             gr.update(visible=pipeline is Pipeline.HYBRID),
             gr.update(visible=pipeline is Pipeline.VIDEO),
-            gr.update(visible=pipeline in {Pipeline.HYBRID, Pipeline.VIDEO}))
+            gr.update(visible=whisper_vis, value=whisper_default),
+            gr.update(visible=whisper_vis))
 
 
 def build_ui() -> gr.Blocks:
@@ -408,8 +464,11 @@ def build_ui() -> gr.Blocks:
                     placeholder="https://www.youtube.com/watch?v=...\nhttps://www.youtube.com/playlist?list=...",
                     lines=3)
                 gr.Markdown("### 🧠 Modello")
-                pipeline_in = gr.Radio(choices=PIPELINES, value=Pipeline.OMNI.value,
-                                       label="Pipeline")
+                pipeline_in = gr.Radio(choices=PIPELINES, value=Pipeline.SPEECH.value,
+                                       label="Pipeline",
+                                       info="Per errori di parlato (parole in più, filler) "
+                                            "usa «Solo parlato»; per schermi neri/freeze "
+                                            "aggiungi Vision o Omni.")
                 model_in = gr.Dropdown(choices=list(MODELS.keys()),
                                        value=DEFAULT_MODEL_LABEL,
                                        label="Modello omni (audio + visione)")
@@ -423,10 +482,19 @@ def build_ui() -> gr.Blocks:
                                              visible=False)
                 whisper_model_in = gr.Dropdown(
                     choices=list(WHISPER_MODELS.keys()),
-                    value=DEFAULT_WHISPER_MODEL_LABEL,
+                    value="Small Q8 (~250 MB, piu veloce)",
                     label="Modello whisper.cpp (audio)",
-                    info="Scaricato automaticamente in ~/.cache/whisper.cpp/ al primo uso.",
-                    visible=False,
+                    info="Per stutter/filler preferisci Small (temp 0.8). "
+                         "Large spesso 'corregge' le ripetizioni. "
+                         "Scaricato in ~/.cache/whisper.cpp/ al primo uso.",
+                    visible=True,
+                )
+                whisper_ensemble_in = gr.Checkbox(
+                    label="Ensemble whisper (temp 0.0 + 0.8)",
+                    value=False,
+                    info="2× più lento. Utile con Medium (recupera stutter). "
+                         "Su Small non serve; su Large puo' peggiorare.",
+                    visible=True,
                 )
                 language_in = gr.Radio(
                     choices=list(LANGUAGE_CHOICES.keys()),
@@ -487,7 +555,7 @@ def build_ui() -> gr.Blocks:
 
         pipeline_in.change(_toggle_pipeline, [pipeline_in],
                            [model_in, vision_model_in, video_model_in,
-                            whisper_model_in])
+                            whisper_model_in, whisper_ensemble_in])
 
         outputs = [logs_out, video_sel, player, table, gallery, json_out, csv_out,
                    summary_out, batch_json_out, batch_csv_out]
@@ -497,7 +565,7 @@ def build_ui() -> gr.Blocks:
             run_analysis,
             [files_in, urls_in, pipeline_in, model_in, vision_model_in,
              video_model_in, whisper_model_in, language_in, conf_in,
-             parallel_in, batch_in, ctx_in],
+             parallel_in, batch_in, ctx_in, whisper_ensemble_in],
             outputs,
             show_progress="minimal",
         )

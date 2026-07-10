@@ -15,6 +15,9 @@ env/
 # Downloads and runs (generated at runtime)
 downloads/
 runs/
+experiments/results/
+experiments/corpus/*.wav
+
 
 # Binaries downloaded by install.py
 tools/
