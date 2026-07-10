@@ -44,19 +44,19 @@ Per **trovare stutter**, i modelli più grandi non sono sempre meglio: Large v3 
 a temp 0.8 sul corpus sintetico collassa «anche anche» / «fornisce fornisce» e
 scende a F1 ~0.57. **Small** con temp 0.8 è il migliore per questo task.
 
-| Modello whisper | Temp | F1 tipico (corpus GT) | Overnight avg (n run) |
-|-----------------|------|------------------------|------------------------|
-| Small Q8 | 0.8 | **1.0** | **0.98** (n=6) |
+| Modello whisper | Temp | F1 tipico (corpus GT) | Overnight avg (n run, ~86) |
+|-----------------|------|------------------------|----------------------------|
+| Small Q8 | 0.8 | **1.0** | **0.99** (n=11) |
 | Small Q8 | 0.6 | ~1.0 | **0.98** (n=7) |
-| Small Q8 | 0.0 | ~0.95 | 0.95 (n=9) |
-| Base Q8 | 0.8 | **0.75** | 0.75 (n=1) — perde anche/filler |
-| Base Q8 | 0.0 | ~0.82 | 0.82 (n=1) |
+| Small Q8 | 0.0 | ~0.95 | 0.96 (n=14) |
+| Base Q8 | 0.8 | **0.75** | 0.75 (n=2) — perde anche/filler |
+| Base Q8 | 0.0 | ~0.82 | 0.82 (n=3) |
 | Base ensemble 0.0+0.8 | **0.89** | (manuale) — recupera stutter, non filler |
-| Medium Q8 | 0.8 | ~0.67–0.82 | 0.76 (n=6) |
-| Medium Q8 | 0.0 | ~0.67 | 0.69 (n=8) |
+| Medium Q8 | 0.8 | ~0.67–0.82 | 0.76 (n=10) |
+| Medium Q8 | 0.0 | ~0.67 | 0.68 (n=13) |
 | Medium Q8 | 0.6 | ~0.46 | **0.46** (n=7) — peggiore |
-| Large v3 Turbo Q5 | 0.8 | ~0.89 | 0.89 (n=3) |
-| Large v3 Turbo Q5 | 0.0 | ~0.82 | 0.82 (n=3) |
+| Large v3 Turbo Q5 | 0.8 | ~0.89 | 0.89 (n=6) |
+| Large v3 Turbo Q5 | 0.0 | ~0.82–0.89 | 0.86 (n=9) |
 | Large v3 Turbo Q5 | 0.6 | ~0.46 | 0.46 (n=3) |
 
 ## Ensemble multi-temperatura
