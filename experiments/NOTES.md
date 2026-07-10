@@ -71,6 +71,10 @@ Due passate (0.0 + 0.8) unite → **F1 1.0** (2× tempo whisper).
 Checkbox UI: «Ensemble whisper (temp 0.0 + 0.8)». Consigliato solo se usi
 Medium/Large; con Small di solito non serve.
 
+## Falsi positivi
+
+Stress test `clean_long.wav` (parlato italiano continuo ~30s senza errori): **0 errori** con Small@0.8. I negativi del corpus (`neg_clean`, liste, ritornelli) restano a 0 FP nelle run overnight.
+
 ## Configurazione consigliata (video tipo 3.5)
 
 1. Pipeline **Solo parlato**

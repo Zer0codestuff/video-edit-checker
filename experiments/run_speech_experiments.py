@@ -50,6 +50,7 @@ GT = {
     "neg_list": [],
     "neg_refrain": [],
     "neg_short_pause": [],
+    "clean_long": [],
     "mixed_long": [
         (3.0, "word_repeat", "anche"),
         (7.0, "word_repeat", "potrebbe"),
