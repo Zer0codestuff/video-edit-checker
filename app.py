@@ -490,8 +490,8 @@ def build_ui() -> gr.Blocks:
                 whisper_ensemble_in = gr.Checkbox(
                     label="Ensemble whisper (temp 0.0 + 0.8)",
                     value=False,
-                    info="2× più lento. Utile con Medium/Large: recupera stutter "
-                         "che una sola temperatura collassa. Su Small di solito non serve.",
+                    info="2× più lento. Utile con Medium (recupera stutter). "
+                         "Su Small non serve; su Large puo' peggiorare.",
                     visible=True,
                 )
                 language_in = gr.Radio(
