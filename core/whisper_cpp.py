@@ -351,12 +351,56 @@ def _backend_label(backend: str) -> str:
     }.get(backend, backend)
 
 
+def whisper_decoding_args(language: str = "it", speech_mode: bool = False) -> list[str]:
+    """Flag di decoding whisper.cpp dipendenti dalla pipeline.
+
+    speech_mode=True (pipeline Solo parlato / ensemble speech): preserva
+    stutter e filler (-mc 0, -sow, temp 0.8, prompt anti-correzione).
+    speech_mode=False: comportamento classico; gli override via env restano validi.
+    """
+    args: list[str] = []
+    if speech_mode:
+        # max-context 0: evita che il decoder "lisci" stutter/parole ripetute.
+        args.extend(["-mc", "0"])
+        # split-on-word: timestamp piu' stabili sui confini di parola.
+        args.append("-sow")
+
+    default_temp = "0.8" if speech_mode else "0"
+    temp = os.environ.get("WHISPER_TEMPERATURE", default_temp).strip()
+    try:
+        temp_f = float(temp)
+    except ValueError:
+        temp_f = 0.8 if speech_mode else 0.0
+    if temp_f > 0:
+        args.extend(["-tp", f"{temp_f:g}"])
+
+    # Prompt: solo in speech_mode di default; WHISPER_INITIAL_PROMPT override sempre.
+    if "WHISPER_INITIAL_PROMPT" in os.environ:
+        prompt = os.environ.get("WHISPER_INITIAL_PROMPT", "").strip()
+    elif speech_mode and language == "it":
+        prompt = (
+            "Trascrivi tutto il parlato incluso esitazioni e ripetizioni "
+            "come ehh, ehm, uhm e parole duplicate."
+        )
+    elif speech_mode and language == "en":
+        prompt = (
+            "Transcribe all speech including hesitations and repetitions "
+            "such as uh, um, and duplicated words."
+        )
+    else:
+        prompt = ""
+    if prompt:
+        args.extend(["--prompt", prompt])
+    return args
+
+
 def transcribe_video(
     video: Path,
     workdir: Path,
     model_path: str = "",
     model_label: str = "",
     language: str = "it",
+    speech_mode: bool = False,
     log=print,
 ) -> list[TranscriptSegment]:
     whisper_bin = shutil.which("whisper-cli")
@@ -373,6 +417,7 @@ def transcribe_video(
         return []
 
     workdir.mkdir(parents=True, exist_ok=True)
+    workdir = workdir.resolve()
     audio_path = workdir / "audio_16khz.wav"
     out_base = workdir / "transcript"
     subprocess.run(
@@ -397,42 +442,8 @@ def transcribe_video(
         "-ojf",
         "-of", str(out_base),
         "-np",
-        # max-context 0: evita che il decoder "lisci" stutter/parole ripetute
-        # usando il contesto precedente (critico per trovare errori di montaggio).
-        "-mc", "0",
-        # split-on-word: timestamp piu' stabili sui confini di parola.
-        "-sow",
+        *whisper_decoding_args(language=language, speech_mode=speech_mode),
     ]
-    # Temperatura > 0 aiuta a NON collassare ripetizioni identiche
-    # (es. «potrebbe potrebbe») in una sola parola. Override con
-    # WHISPER_TEMPERATURE=0 per il comportamento classico.
-    # 0.8: sui modelli medium+ a temp 0 gli stutter collassano; 0.8 li
-    # preserva (es. «potrebbe potrebbe») senza degradare troppo il testo.
-    temp = os.environ.get("WHISPER_TEMPERATURE", "0.8").strip()
-    try:
-        temp_f = float(temp)
-    except ValueError:
-        temp_f = 0.8
-    if temp_f > 0:
-        cmd.extend(["-tp", f"{temp_f:g}"])
-    # Prompt iniziale: invita a trascrivere esitazioni/filler invece di
-    # "correggerli". Override con WHISPER_INITIAL_PROMPT="" per disattivare.
-    if "WHISPER_INITIAL_PROMPT" in os.environ:
-        prompt = os.environ.get("WHISPER_INITIAL_PROMPT", "").strip()
-    elif language == "it":
-        prompt = (
-            "Trascrivi tutto il parlato incluso esitazioni e ripetizioni "
-            "come ehh, ehm, uhm e parole duplicate."
-        )
-    elif language == "en":
-        prompt = (
-            "Transcribe all speech including hesitations and repetitions "
-            "such as uh, um, and duplicated words."
-        )
-    else:
-        prompt = ""
-    if prompt:
-        cmd.extend(["--prompt", prompt])
     # Non passare mai -ng/--no-gpu: su build CUDA/Vulkan deve usare la GPU.
     # Flash-attn di default crasha molti driver Vulkan (AMD/Intel/NVIDIA):
     # come in WhisperDrop lo disabilitiamo su Vulkan salvo opt-in esplicito.

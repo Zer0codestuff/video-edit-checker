@@ -8,6 +8,7 @@ a costo di tempo (N× whisper).
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from core.language import LanguagePack, resolve_language
@@ -23,19 +24,31 @@ def transcribe_multi_temp(
     temperatures: tuple[float, ...] = (0.0, 0.8),
     model_label: str = "",
     language: str = "it",
+    speech_mode: bool = True,
     log=print,
 ) -> list:
-    """Esegue whisper a più temperature; restituisce lista di liste di segmenti."""
+    """Esegue whisper a più temperature; restituisce lista di liste di segmenti.
+
+    Ripristina sempre WHISPER_TEMPERATURE (anche se una trascrizione fallisce).
+    """
     all_segs = []
-    for i, temp in enumerate(temperatures):
-        os.environ["WHISPER_TEMPERATURE"] = str(temp)
-        sub = workdir / f"temp_{temp:g}"
-        segs = transcribe_video(
-            video, sub, model_label=model_label, language=language, log=log,
-        )
-        all_segs.append(segs)
-        log(f"  temp={temp:g}: {len(segs)} segmenti, "
-            f"{sum(len(s.words) for s in segs)} parole")
+    prev_temp = os.environ.get("WHISPER_TEMPERATURE")
+    try:
+        for temp in temperatures:
+            os.environ["WHISPER_TEMPERATURE"] = str(temp)
+            sub = workdir / f"temp_{temp:g}"
+            segs = transcribe_video(
+                video, sub, model_label=model_label, language=language,
+                speech_mode=speech_mode, log=log,
+            )
+            all_segs.append(segs)
+            log(f"  temp={temp:g}: {len(segs)} segmenti, "
+                f"{sum(len(s.words) for s in segs)} parole")
+    finally:
+        if prev_temp is None:
+            os.environ.pop("WHISPER_TEMPERATURE", None)
+        else:
+            os.environ["WHISPER_TEMPERATURE"] = prev_temp
     return all_segs
 
 
@@ -45,15 +58,26 @@ def detect_ensemble(
     language: str | LanguagePack = "it",
     cfg: SpeechEditConfig | None = None,
 ) -> list[EditError]:
-    """Applica speech-edit a ogni trascrizione e fa merge."""
+    """Applica speech-edit a ogni trascrizione e fa merge.
+
+    La baseline segment-level gira una sola volta (prima trascrizione non vuota);
+    i detector word-level restano in unione su tutte le temperature.
+    """
     cfg = cfg or SpeechEditConfig()
     lang = language if isinstance(language, LanguagePack) else resolve_language(language)
     errors: list[EditError] = []
+    word_cfg = replace(cfg, enable_segment_baseline=False)
+
+    baseline_segs = next((s for s in segment_lists if s), None)
+    if baseline_segs is not None and cfg.enable_segment_baseline:
+        errors.extend(detect_transcript_errors(
+            baseline_segs, video_duration, language=lang,
+        ))
+
     for segs in segment_lists:
         if not segs:
             continue
         errors.extend(detect_speech_edit_errors(
-            segs, video_duration, language=lang, cfg=cfg,
-            baseline_fn=detect_transcript_errors,
+            segs, video_duration, language=lang, cfg=word_cfg,
         ))
     return merge_errors(errors)

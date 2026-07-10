@@ -12,6 +12,47 @@ Ground truth manuale su `https://youtu.be/NqG8O7aNnTs` (3.5 Gestione del rischio
 
 YouTube blocca gli IP cloud → corpus sintetico in `corpus/` che riproduce gli stessi pattern.
 
+## Video reale (luglio 2026) — risultato onesto
+
+Sul file scaricato localmente (`NqG8O7aNnTs`), Whisper **non** emette ripetizioni adiacenti
+come nel corpus TTS. Forme tipiche nel transcript Small Q8 @ 0.8:
+
+| GT | Cosa c'e' nell'ASR | Detector classico |
+|----|--------------------|-------------------|
+| 2:15 | `il il` (function-word, gap ~80ms) | FN (stopword ignorate) |
+| 4:00 | `potrebbe non prevenuto potrebbe` | FN (non adiacente) |
+| 6:07 | `a un soggetto` … `a un soggetto` (3 parole in mezzo) | FN (non adiacente) |
+| 10:00 | `fornisce, sarebbe in grado di fornire` | FN (stem diverso) |
+| 11:13 | nessun token filler; gap ~0.36s quasi silente (rms≪parlato) | FN |
+
+**Baseline app (prima dei restart detector):** Small Q8 temp0.8 = **0/5**, 0 FP;
+ensemble 0.0+0.8 = **0/5** + FP «agisce» @0:59.
+
+**Dopo near-repeat / function-word / stem-restart (stesso ASR, no GT hardcoded):**
+
+| Evento | Esito | Nota |
+|--------|-------|------|
+| 2:15 | TP | «il» adiacente, gap stretto |
+| 4:00 | TP | near-unigram «potrebbe» |
+| 6:07 | TP | near-ngram «a un soggetto» |
+| 10:00 | TP | stem false-start «fornisce / fornire» + cue `sarebbe` |
+| 11:13 | **FN** | nessun segnale ASR; energia nel gap ≈ silenzio |
+
+FP vs i 5 GT (intero video, Small@0.8 single, E2E CLI): **2**
+- «politiche di prevenzione» @1:43 — ripresa reale nel parlato (non in GT)
+- «di di» @12:00 — stutter function-word reale (non in GT)
+
+Ensemble 0.0+0.8 con i nuovi detector: ancora **4/5**, ma **5 FP** (riappare «agisce»
+e altri da temp 0.0). Consigliato: **single Small@0.8**, ensemble off.
+
+### Prove negative (non integrate)
+
+1. **Filler acustico su gap mid-energy:** decine di candidati / video; il gap @11:13 e'
+   troppo silente per un «ehh» sonoro. Non aggiunto.
+2. **Best-of / entropy / no-speech-thold** su finestre ±4s intorno ai GT: nessuna
+   variante ha prodotto `fornisce fornisce` o un token `ehh`.
+3. **Matcher permissivi solo-tempo:** evitati; TP richiede ±3s **e** descrizione coerente.
+
 ## Risultati chiave
 
 | Pipeline | Precision | Recall | F1 | Note |
@@ -23,20 +64,25 @@ YouTube blocca gli IP cloud → corpus sintetico in `corpus/` che riproduce gli 
 | **full word-level** | **~0.86–1.0** | **~0.6–0.8** | **~0.7–0.89** | Miglior tradeoff |
 | **full + merge fix + emm** | **1.0** | **1.0** | **1.0** | Dopo fix merge speech + filler `emm` |
 | text fallback only | alta | buona | fino a 0.78 | Utile se i token BPE sono rumorosi |
+| **full + near/stem/function (video reale)** | ~0.67 (4/6) | **0.8 (4/5)** | ~0.73 | Vedi sezione video reale |
 
 ## Cosa funziona
 
 1. **Word-token whisper (`-ojf`)** + merge BPE (senza `strip()` prematuro).
 2. **Ripetizioni adiacenti** unigram/n-gram con gap ≤ ~1.5s, ignorando stopword unigram.
-3. **Fallback sul testo del segmento** se i token sono fusi/storti.
-4. **`-mc 0` + temperatura ~0.8**: riduce il collasso «potrebbe potrebbe» → «potrebbe» (visto su medium a temp 0).
+3. **Near-repeat** (stessa parola/n-gram con materiale in mezzo, ancore lessicali forti).
+4. **Function-word adiacenti** con gap ≤ ~0.35s (`il il`, `di di`).
+5. **Stem false-start** con cue di ripresa (`sarebbe`/`potrebbe`/…) e virgola ASR.
+6. **Fallback sul testo del segmento** se i token sono fusi/storti.
+7. **`-mc 0` + temperatura ~0.8**: riduce il collasso «potrebbe potrebbe» → «potrebbe» (visto su medium a temp 0).
 
 ## Cosa non funziona (o poco)
 
 1. Baseline a soli segmenti: **0 recall** sui GT del video 3.5.
-2. Filler «ehh»: whisper spesso li mappa a `e`/`m`/`ehm`/`em`; regex stretta su `ehh` non basta.
+2. Filler «ehh» sul video reale: assente dall'ASR e dal profilo energetico del gap; sul corpus TTS dipende da come Whisper mappa `ehm`/`em`.
 3. Modelli whisper più grandi (Large Turbo) “correggono” gli stutter → peggiorano il recall per questo task.
 4. Download YouTube da cloud: bot-check, serve run locale sul file reale.
+5. Ensemble su Small nel video reale: non alza il recall, alza i FP.
 
 ## Whisper model size (importante)
 

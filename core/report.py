@@ -14,7 +14,10 @@ MERGE_GAP_SECONDS = 3.0
 # Errori di parlato distinti (parole diverse) non vanno fusi solo perche'
 # cadono entro MERGE_GAP: altrimenti «soggetto» + «fornisce» a 2s di distanza
 # diventano un solo evento e se ne perde uno nel report.
-_SPEECH_TYPES = frozenset({"repeated_phrase", "missed_cut", "audio_glitch"})
+_SPEECH_TYPES = frozenset({"repeated_phrase", "missed_cut"})
+# audio_glitch: descrizioni boilerplate quasi identiche ("Silenzio o vuoto...");
+# fondi solo se gli intervalli si sovrappongono/toccano, non per similarita' testuale.
+_OVERLAP_ONLY_TYPES = frozenset({"audio_glitch"})
 
 
 def _speech_same_event(a: EditError, b: EditError) -> bool:
@@ -36,10 +39,11 @@ def merge_errors(errors: list[EditError]) -> list[EditError]:
     """Unisce errori dello stesso tipo vicini/sovrapposti (da finestre overlappanti)."""
     merged: list[EditError] = []
     for err in sorted(errors, key=lambda e: (e.type, e.start)):
+        gap = 0.0 if err.type in _OVERLAP_ONLY_TYPES else MERGE_GAP_SECONDS
         if (
             merged
             and merged[-1].type == err.type
-            and err.start <= merged[-1].end + MERGE_GAP_SECONDS
+            and err.start <= merged[-1].end + gap
             and (err.type not in _SPEECH_TYPES or _speech_same_event(merged[-1], err))
         ):
             prev = merged[-1]

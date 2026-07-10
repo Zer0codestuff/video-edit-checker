@@ -45,6 +45,32 @@ class MergeFilterTests(unittest.TestCase):
         self.assertEqual(merged[0].end, 13.0)
         self.assertEqual(merged[0].confidence, 0.9)
 
+    def test_merge_does_not_fuse_distinct_nearby_audio_glitches(self):
+        # Boilerplate quasi identico + gap < 3s non deve fondere due silenzi distinti.
+        errs = [
+            EditError("audio_glitch", 10.0, 16.0,
+                      "Silenzio o vuoto audio anomalo di circa 6.0 secondi.", 0.7),
+            EditError("audio_glitch", 17.5, 23.0,
+                      "Silenzio o vuoto audio anomalo di circa 5.5 secondi.", 0.75),
+        ]
+        merged = merge_errors(errs)
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(merged[0].start, 10.0)
+        self.assertEqual(merged[1].start, 17.5)
+
+    def test_merge_fuses_overlapping_audio_glitches(self):
+        errs = [
+            EditError("audio_glitch", 10.0, 16.0,
+                      "Silenzio o vuoto audio anomalo di circa 6.0 secondi.", 0.7),
+            EditError("audio_glitch", 15.0, 18.0,
+                      "Silenzio o vuoto audio anomalo di circa 3.0 secondi.", 0.8),
+        ]
+        merged = merge_errors(errs)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].start, 10.0)
+        self.assertEqual(merged[0].end, 18.0)
+        self.assertEqual(merged[0].confidence, 0.8)
+
     def test_filter_confidence_and_short_black(self):
         errs = [
             EditError("other", 0, 1, "low", 0.2),

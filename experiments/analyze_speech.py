@@ -42,7 +42,7 @@ def main() -> None:
     video = args.video.expanduser().resolve()
     if not video.exists():
         sys.exit(f"File non trovato: {video}")
-    outdir = args.outdir or (ROOT / "runs" / f"speech_{video.stem}")
+    outdir = (args.outdir or (ROOT / "runs" / f"speech_{video.stem}")).expanduser().resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     lang = resolve_language(args.language)
 
@@ -60,12 +60,13 @@ def main() -> None:
     if args.ensemble:
         seg_lists = transcribe_multi_temp(
             video, outdir / "whisper", temperatures=(0.0, 0.8),
-            model_label=args.model, language=lang.code, log=print)
+            model_label=args.model, language=lang.code,
+            speech_mode=True, log=print)
         errors.extend(detect_ensemble(seg_lists, probe_duration(video), language=lang))
     else:
         segs = transcribe_video(
             video, outdir / "whisper", model_label=args.model,
-            language=lang.code, log=print)
+            language=lang.code, speech_mode=True, log=print)
         if segs:
             # Durata: da segmenti se ffprobe fallisce su wav strani
             try:

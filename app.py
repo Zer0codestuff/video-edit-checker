@@ -271,6 +271,7 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                         temperatures=(0.0, 0.8),
                         model_label=wlabel,
                         language=lang.code,
+                        speech_mode=use_speech,
                         log=log,
                     )
                     segments = next((s for s in seg_lists if s), [])
@@ -282,6 +283,7 @@ def run_analysis(files, urls_text, pipeline_label, model_label, vision_model_lab
                         vdir / "whisper",
                         model_label=wlabel,
                         language=lang.code,
+                        speech_mode=use_speech,
                         log=log,
                     )
                     if segments:

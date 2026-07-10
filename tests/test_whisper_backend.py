@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from core.whisper_cpp import detect_whisper_backend
+from core.whisper_cpp import detect_whisper_backend, whisper_decoding_args
 import install as install_mod
 
 
@@ -90,6 +91,44 @@ class InstallGpuDetectTests(unittest.TestCase):
             (root / "ggml-cuda.dll").write_bytes(b"x")
             self.assertEqual(install_mod._whisper_backend(exe), "cuda")
             self.assertTrue(install_mod._whisper_is_cuda(exe))
+
+
+class WhisperDecodingArgsTests(unittest.TestCase):
+    def setUp(self):
+        self._saved_temp = os.environ.pop("WHISPER_TEMPERATURE", None)
+        self._had_prompt = "WHISPER_INITIAL_PROMPT" in os.environ
+        self._saved_prompt = os.environ.pop("WHISPER_INITIAL_PROMPT", None)
+
+    def tearDown(self):
+        if self._saved_temp is None:
+            os.environ.pop("WHISPER_TEMPERATURE", None)
+        else:
+            os.environ["WHISPER_TEMPERATURE"] = self._saved_temp
+        if self._had_prompt:
+            os.environ["WHISPER_INITIAL_PROMPT"] = self._saved_prompt or ""
+        else:
+            os.environ.pop("WHISPER_INITIAL_PROMPT", None)
+
+    def test_classic_pipeline_has_no_speech_defaults(self):
+        args = whisper_decoding_args(language="it", speech_mode=False)
+        self.assertNotIn("-mc", args)
+        self.assertNotIn("-sow", args)
+        self.assertNotIn("-tp", args)
+        self.assertNotIn("--prompt", args)
+
+    def test_speech_mode_enables_stutter_preserving_defaults(self):
+        args = whisper_decoding_args(language="it", speech_mode=True)
+        self.assertEqual(args[args.index("-mc") + 1], "0")
+        self.assertIn("-sow", args)
+        self.assertEqual(args[args.index("-tp") + 1], "0.8")
+        self.assertIn("--prompt", args)
+        prompt = args[args.index("--prompt") + 1]
+        self.assertIn("ehh", prompt)
+
+    def test_env_temperature_overrides_classic_default(self):
+        os.environ["WHISPER_TEMPERATURE"] = "0.6"
+        args = whisper_decoding_args(language="it", speech_mode=False)
+        self.assertEqual(args[args.index("-tp") + 1], "0.6")
 
 
 if __name__ == "__main__":

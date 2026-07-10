@@ -130,6 +130,100 @@ class FillerTests(unittest.TestCase):
         self.assertEqual(errs, [])
 
 
+class NearRepeatTests(unittest.TestCase):
+    def test_detects_potrebbe_with_intervening_words(self):
+        from core.language import resolve_language
+        from core.speech_edits import detect_near_word_repeats
+        words = [
+            _w(240.0, "evento"), _w(240.5, "dannoso"),
+            _w(241.0, "potrebbe"), _w(241.5, "non"), _w(241.9, "prevenuto"),
+            _w(242.5, "potrebbe"), _w(243.0, "avere"),
+        ]
+        errs = detect_near_word_repeats(words, 300.0, resolve_language("it"))
+        self.assertTrue(errs)
+        self.assertIn("potrebbe", errs[0].description)
+
+    def test_detects_near_ngram_soggetto(self):
+        from core.language import resolve_language
+        from core.speech_edits import detect_near_ngram_repeats
+        words = [
+            _w(367.0, "a"), _w(367.2, "un"), _w(367.4, "soggetto"),
+            _w(368.0, "dell'evento"), _w(368.5, "potenzialmente"), _w(369.0, "dannoso"),
+            _w(370.0, "a"), _w(370.2, "un"), _w(370.4, "soggetto"),
+            _w(371.0, "esterno"),
+        ]
+        errs = detect_near_ngram_repeats(words, 400.0, resolve_language("it"))
+        self.assertTrue(errs)
+        self.assertIn("soggetto", errs[0].description)
+
+    def test_ignores_rhetorical_abbiamo(self):
+        from core.language import resolve_language
+        from core.speech_edits import detect_near_word_repeats
+        # Parallelismo retorico con molte parole in mezzo, senza cue di ripresa.
+        words = [
+            _w(20.0, "abbiamo"), _w(20.5, "identificato"), _w(21.0, "le"),
+            _w(21.3, "tipologie"), _w(21.8, "specifiche"),
+            _w(22.5, "abbiamo"), _w(23.0, "analizzato"),
+        ]
+        errs = detect_near_word_repeats(words, 30.0, resolve_language("it"))
+        self.assertEqual(errs, [])
+
+
+class FunctionWordRepeatTests(unittest.TestCase):
+    def test_detects_il_il_tight_gap(self):
+        from core.language import resolve_language
+        from core.speech_edits import detect_function_word_repeats
+        words = [_w(137.35, "il", 0.13), _w(137.56, "il", 0.13), _w(137.7, "rischio")]
+        # gap = 137.56 - 137.48 = 0.08
+        errs = detect_function_word_repeats(words, 200.0, resolve_language("it"))
+        self.assertEqual(len(errs), 1)
+        self.assertIn("il", errs[0].description)
+
+    def test_ignores_stopword_with_wide_gap(self):
+        from core.language import resolve_language
+        from core.speech_edits import detect_function_word_repeats
+        words = [_w(1.0, "di", 0.2), _w(2.0, "di", 0.2), _w(2.5, "rischio")]
+        errs = detect_function_word_repeats(words, 10.0, resolve_language("it"))
+        self.assertEqual(errs, [])
+
+
+class StemRestartTests(unittest.TestCase):
+    def test_detects_fornisce_fornire_false_start(self):
+        from core.language import resolve_language
+        from core.speech_edits import detect_stem_restarts
+        words = [
+            _w(601.5, "massimo", 0.4),
+            _w(602.0, "fornisce", 0.6),
+            _w(602.8, "sarebbe", 0.5),
+            _w(603.4, "in", 0.2),
+            _w(603.7, "grado", 0.3),
+            _w(604.1, "di", 0.2),
+            _w(604.4, "fornire", 0.6),
+        ]
+        segs = [TranscriptSegment(
+            600, 606,
+            "massimo fornisce, sarebbe in grado di fornire",
+            words=words,
+        )]
+        errs = detect_stem_restarts(words, segs, 700.0, resolve_language("it"))
+        self.assertTrue(errs)
+        self.assertIn("fornisce", errs[0].description.lower())
+        self.assertIn("fornire", errs[0].description.lower())
+
+    def test_ignores_unrelated_shared_prefix_without_cue(self):
+        from core.language import resolve_language
+        from core.speech_edits import detect_stem_restarts
+        words = [
+            _w(1.0, "limiti", 0.4),
+            _w(1.5, "la", 0.2),
+            _w(1.8, "tensione", 0.4),
+            _w(2.3, "limitando", 0.5),
+        ]
+        segs = [TranscriptSegment(0, 4, "limiti la tensione limitando", words=words)]
+        errs = detect_stem_restarts(words, segs, 10.0, resolve_language("it"))
+        self.assertEqual(errs, [])
+
+
 class PipelineTests(unittest.TestCase):
     def test_combined_finds_all_gt_patterns(self):
         from core.language import resolve_language
@@ -151,6 +245,34 @@ class PipelineTests(unittest.TestCase):
         blob = types_desc.lower()
         for needle in ("anche", "potrebbe", "soggetto", "fornisce", "ehh"):
             self.assertIn(needle, blob)
+
+    def test_pipeline_finds_real_asr_restart_shapes(self):
+        """Forme tipiche del video reale (non adiacenti / stem), senza GT hardcoded."""
+        words = [
+            _w(137.35, "il", 0.13), _w(137.56, "il", 0.13), _w(137.7, "rischio"),
+            _w(241.0, "potrebbe"), _w(241.5, "non"), _w(241.9, "prevenuto"),
+            _w(242.5, "potrebbe"), _w(243.0, "avere"),
+            _w(367.0, "a"), _w(367.2, "un"), _w(367.4, "soggetto"),
+            _w(368.0, "dell'evento"), _w(368.5, "potenzialmente"), _w(369.0, "dannoso"),
+            _w(370.0, "a"), _w(370.2, "un"), _w(370.4, "soggetto"),
+            _w(602.0, "fornisce", 0.6), _w(602.8, "sarebbe", 0.5),
+            _w(603.4, "in", 0.2), _w(603.7, "grado", 0.3),
+            _w(604.1, "di", 0.2), _w(604.4, "fornire", 0.6),
+        ]
+        segs = [TranscriptSegment(
+            0, 700,
+            "riducono il il rischio. potrebbe non prevenuto, potrebbe avere. "
+            "a un soggetto, dell'evento potenzialmente dannoso, a un soggetto. "
+            "fornisce, sarebbe in grado di fornire",
+            words=words,
+        )]
+        cfg = SpeechEditConfig(enable_segment_baseline=False)
+        errs = detect_speech_edit_errors(segs, 700.0, "it", cfg=cfg)
+        blob = " ".join(e.description.lower() for e in errs)
+        self.assertIn("il", blob)
+        self.assertIn("potrebbe", blob)
+        self.assertIn("soggetto", blob)
+        self.assertIn("fornisce", blob)
 
     def test_clean_speech_no_false_positives(self):
         words = [
